@@ -8,6 +8,15 @@ target_link_libraries(
 
 add_test(NAME scene_polytree.contracts COMMAND scene_polytree_contract_tests)
 
+add_executable(scene_polytree_transform_tests transform_tests.cpp)
+target_link_libraries(
+    scene_polytree_transform_tests
+    PRIVATE
+        scene-polytree::core
+)
+
+add_test(NAME scene_polytree.transforms COMMAND scene_polytree_transform_tests)
+
 find_package(Python3 COMPONENTS Interpreter)
 if(Python3_Interpreter_FOUND)
     add_test(

@@ -25,7 +25,7 @@ function(scene_polytree_require_polytree)
         return()
     endif()
 
-    find_package(polytree CONFIG QUIET)
+    find_package(polytree 0.2 CONFIG QUIET)
     if(TARGET polytree::polytree)
         return()
     endif()

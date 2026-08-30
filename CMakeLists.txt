@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.24)
 
 project(
     scene-polytree
-    VERSION 0.2.0
+    VERSION 0.3.0
     DESCRIPTION "Engine-neutral scene hierarchy composed over a functional polytree"
     LANGUAGES CXX
 )
@@ -19,11 +19,6 @@ option(
     SCENE_POLYTREE_BUILD_TESTS
     "Build scene-polytree contract tests"
     ${_scene_polytree_tests_default}
-)
-option(
-    SCENE_POLYTREE_REQUIRE_POLYTREE
-    "Require and link the external polytree::polytree package"
-    ON
 )
 set(
     SCENE_POLYTREE_POLYTREE_SOURCE_DIR
@@ -49,16 +44,16 @@ target_include_directories(
         $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
 )
 
-if(SCENE_POLYTREE_REQUIRE_POLYTREE)
-    include(cmake/Dependencies.cmake)
-    scene_polytree_require_polytree()
-    target_link_libraries(
-        scene_polytree
-        INTERFACE
-            $<BUILD_INTERFACE:polytree::polytree>
-            $<INSTALL_INTERFACE:polytree::polytree>
-    )
-endif()
+include(cmake/Dependencies.cmake)
+scene_polytree_require_polytree()
+target_link_libraries(
+    scene_polytree
+    INTERFACE
+        $<BUILD_INTERFACE:algo::algo>
+        $<BUILD_INTERFACE:polytree::polytree>
+        $<INSTALL_INTERFACE:algo::algo>
+        $<INSTALL_INTERFACE:polytree::polytree>
+)
 
 add_library(scene_polytree_motion INTERFACE)
 add_library(scene-polytree::motion ALIAS scene_polytree_motion)
@@ -89,14 +84,6 @@ install(
     NAMESPACE scene-polytree::
     DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/scene-polytree
 )
-set(SCENE_POLYTREE_FIND_POLYTREE "")
-if(SCENE_POLYTREE_REQUIRE_POLYTREE)
-    set(
-        SCENE_POLYTREE_FIND_POLYTREE
-        "include(CMakeFindDependencyMacro)\nfind_dependency(polytree CONFIG)"
-    )
-endif()
-
 configure_package_config_file(
     cmake/scene-polytree-config.cmake.in
     ${CMAKE_CURRENT_BINARY_DIR}/scene-polytree-config.cmake

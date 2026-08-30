@@ -24,26 +24,66 @@ motion extension
 O3DE adapter
 ```
 
-The repository does not privately copy the Wozzits polytree headers. Its core
-target requires `polytree::polytree` by default. CMake uses an explicitly
-provided source checkout or installed package when available, otherwise it
-fetches the mutable/freeze-capable `polytree` v0.2.0 release. That package resolves
-`algo::algo` in the same way.
+The repository does not privately copy the Wozzits polytree or algorithm
+headers. Its core target requires both `polytree::polytree` and `algo::algo`.
+CMake uses explicitly provided source checkouts or installed packages when
+available, otherwise it fetches the mutable/freeze-capable `polytree` v0.2.0
+release, which resolves the matching algorithm package.
 
-## Initial targets
+## Targets
 
-- `scene-polytree::core`: topology composition, transform records, and runtime
-  evaluation-plan contracts.
+- `scene-polytree::core`: mutable authoring scenes, compact runtime snapshots,
+  transform storage, dirty planning, partial evaluation, and changed-node
+  views.
 - `scene-polytree::motion`: optional motion state layered on the core.
 - `scene-polytree::o3de`: reserved for the optional O3DE Gem adapter; it will
   not become the owner of scene topology.
 
-The contract tests instantiate a mutable three-node hull, turret, and gun
-authoring hierarchy, freeze it into compact runtime topology, verify both
-identity directions and cached evaluation plans, then reparent and freeze again
-to demonstrate explicit snapshot invalidation. Transform propagation remains a
-later milestone and will be implemented exclusively through the generic
-package APIs.
+The core transform evaluator consumes only polytree's cached topological view.
+Local edits mark one node directly; planning derives affected descendants from
+parent state, and evaluation composes only those affected nodes. Stable-ID
+authoring state can be frozen initially or reconciled against a previous
+runtime snapshot so reparented subtrees update without touching unrelated
+roots.
+
+## Transform example
+
+```cpp
+struct translation
+{
+    int value{};
+};
+
+struct translation_policy
+{
+    using transform_type = translation;
+
+    translation compose(
+        const translation& parent_world,
+        const translation& local) noexcept
+    {
+        return {parent_world.value + local.value};
+    }
+};
+
+scene_polytree::basic_authoring_scene<int, int, translation> authoring;
+const auto root = authoring.insert_root(10, translation{100}).value();
+authoring.insert_child(root, 20, 1, translation{5});
+
+wz::core::graph::FreezeWorkspace freeze_workspace;
+auto frozen = scene_polytree::freeze_scene(authoring, freeze_workspace);
+auto runtime = std::move(frozen).value();
+
+scene_polytree::transform_evaluation_workspace evaluation_workspace;
+auto plan = scene_polytree::make_transform_evaluation_plan(
+    runtime.topology(), runtime.state(), evaluation_workspace);
+translation_policy policy;
+auto changed = scene_polytree::evaluate_transforms(
+    runtime.topology(), runtime.state(), plan.value(), policy);
+```
+
+See [the transform contract](docs/transforms.md) for dirty-state, revision,
+partial-evaluation, lifetime, reparenting, and thread-safety semantics.
 
 ## Build and test
 
@@ -71,6 +111,7 @@ python tools/check_control_flow_policy.py
 Before adding traversal or evaluation code, see:
 
 - [Architecture](docs/architecture.md)
+- [Transform evaluation contract](docs/transforms.md)
 - [Extraction inventory](docs/extraction-inventory.md)
 - [Behavior-to-test manifest](docs/behavior-test-manifest.md)
 - [Baseline test report](docs/baseline-test-report.md)

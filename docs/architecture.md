@@ -22,10 +22,15 @@ database or creating a second entity/component system.
 
 ## Evaluation
 
-Transform propagation consumes topological order. Work that can execute in
-parallel consumes dependency levels. Motion, procedural animation, Inochi
-puppet evaluation, and engine synchronization are separate operations over the
-same scene and ordering data.
+Transform dirty planning and propagation consume the static polytree's cached
+topological order. A plan scans that order once, derives descendant
+invalidation from parent state, and records only affected nodes for transform
+composition. Partial plans select complete dirty-root scopes; they cannot
+start beneath a pending dirty ancestor.
+
+Work that can execute in parallel consumes dependency levels. Motion,
+procedural animation, Inochi puppet evaluation, and engine synchronization are
+separate operations over the same scene and ordering data.
 
 Scene operations select data and describe transformations. Generic operations
 own iteration, early termination, scheduling, and possible CPU, SIMD, task, or
@@ -35,6 +40,9 @@ GPU execution strategies.
 
 Dense runtime scene state is indexed by frozen `NodeHandle` values, while
 authoring state and sparse optional state can be keyed by `StableNodeId`.
+Incremental scene freeze remaps surviving transform records through stable
+identity and compares stable parent identity before retaining a cached world
+value. Dense-handle changes caused only by ordering do not invalidate worlds.
 Freeze mappings are immutable snapshots: any successful authoring mutation
 changes the source revision, so a later runtime snapshot must use the later
 mapping. The mapping and old runtime scene remain valid as an older snapshot.

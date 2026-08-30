@@ -20,3 +20,11 @@ jobs:
         run: cmake --build build --config Release
       - name: Test
         run: ctest --test-dir build -C Release --output-on-failure
+      - name: Install package chain
+        run: cmake --install build --config Release --prefix "${{ github.workspace }}/install"
+      - name: Configure installed consumer
+        run: cmake -S tests/consumer -B consumer-build -DCMAKE_PREFIX_PATH="${{ github.workspace }}/install"
+      - name: Build installed consumer
+        run: cmake --build consumer-build --config Release
+      - name: Run installed consumer
+        run: ctest --test-dir consumer-build -C Release --output-on-failure
