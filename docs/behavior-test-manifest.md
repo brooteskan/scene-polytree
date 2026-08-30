@@ -183,3 +183,16 @@ scene contract test:
 5. Repeated freeze compares all generic plan views and identity maps.
 6. `basic_scene` composes mutable or static topology with separate scene state;
    runtime topology remains immutable and no `const_cast` pattern is retained.
+
+## Current motion integration
+
+Issue #7 adds the following current scene-polytree contracts. These are not
+claims about the historical Wozzits motion implementation.
+
+| Source/API | Operation or observable contract | Ordering | Allocation | Termination/error behavior | Test evidence | Status/notes |
+|---|---|---|---|---|---|---|
+| `active_motion_set` | Sparse registration, update, stationary removal, deactivation, and validated batch application | Ascending runtime `NodeHandle`, independent of registration order | Sorted vector grows on demand; storage capacity is observable | Invalid handles reject before a batch mutation; stationary state removes rather than disables a record | `scene_polytree.motion` registration and ordering case | **Current** |
+| `fixed_step_sequence` | Supplies an exact duration and monotonic tick to policy integration | Tick increases once after each successful centralized evaluation | None | Non-positive steps, exhausted ticks, topology/state mismatch, and revision exhaustion do not mutate scene or tick | `scene_polytree.motion` validation case | **Current** |
+| `advance_motion_scene` | Integrates active locals, then delegates affected-subtree world propagation to the core dirty planner | Active handle order followed by cached topological transform order | Caller workspaces retain `O(active)` motion scratch plus core transform-planning scratch | Preflight errors return before mutation; success reports directly integrated and propagated changed nodes | `scene_polytree.motion` centralized integration case | **Current** |
+| Articulated tank fixture | Same hull/turret/gun asset and scene representation accept player and AI intent | Central motion and transform ordering only; controllers do not traverse | Private example support only; no installed tank API | Stationary intent empties active storage and a later tick invokes no integration/composition callbacks | `scene_polytree.example.articulated_tank`, `scene_polytree.tank_example` | **Current, adequate integration fixture** |
+| Motion storage benchmark | Compares production sparse records with dense state-plus-active-byte storage | Evenly spaced active handles; same checksum per candidate | Reports capacity bytes at 1K, 10K, and 100K nodes | Standalone Release benchmark; not a pass/fail performance gate | `scene_polytree_motion_storage_benchmark` and recorded results | **Current measurement** |

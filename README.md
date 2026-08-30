@@ -35,7 +35,9 @@ release, which resolves the matching algorithm package.
 - `scene-polytree::core`: mutable authoring scenes, compact runtime snapshots,
   transform storage, dirty planning, partial evaluation, and changed-node
   views.
-- `scene-polytree::motion`: optional motion state layered on the core.
+- `scene-polytree::motion`: deterministic fixed-step local motion, sparse
+  active-node storage, and centralized dirty-transform evaluation layered on
+  the core.
 - `scene-polytree::o3de`: reserved for the optional O3DE Gem adapter; it will
   not become the owner of scene topology.
 
@@ -85,6 +87,19 @@ auto changed = scene_polytree::evaluate_transforms(
 See [the transform contract](docs/transforms.md) for dirty-state, revision,
 partial-evaluation, lifetime, reparenting, and thread-safety semantics.
 
+## Motion extension
+
+The motion extension keeps player/AI intent and engine math in consumer policy
+while owning one fixed-step evaluation pipeline. Moving nodes are registered in
+deterministic handle order; stationary state is removed from the active set.
+Each successful tick integrates active local transforms and delegates all
+descendant propagation to the core dirty planner.
+
+The private headless tank example instantiates the same hull/turret/gun asset
+for player and AI control. It is an integration fixture, not installed API.
+See [the motion contract](docs/motion.md) and
+[storage benchmark results](docs/motion-storage-results.md).
+
 ## Build and test
 
 ```sh
@@ -112,6 +127,8 @@ Before adding traversal or evaluation code, see:
 
 - [Architecture](docs/architecture.md)
 - [Transform evaluation contract](docs/transforms.md)
+- [Motion extension contract](docs/motion.md)
+- [Motion storage benchmark](docs/motion-storage-results.md)
 - [Extraction inventory](docs/extraction-inventory.md)
 - [Behavior-to-test manifest](docs/behavior-test-manifest.md)
 - [Baseline test report](docs/baseline-test-report.md)

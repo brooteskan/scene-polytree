@@ -15,7 +15,11 @@ jobs:
       - name: Enforce source policy
         run: python tools/check_control_flow_policy.py
       - name: Configure
-        run: cmake -S . -B build -DSCENE_POLYTREE_BUILD_TESTS=ON
+        run: >-
+          cmake -S . -B build
+          -DSCENE_POLYTREE_BUILD_TESTS=ON
+          -DSCENE_POLYTREE_BUILD_EXAMPLES=ON
+          -DSCENE_POLYTREE_BUILD_BENCHMARKS=ON
       - name: Build
         run: cmake --build build --config Release
       - name: Test

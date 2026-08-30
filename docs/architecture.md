@@ -28,9 +28,12 @@ invalidation from parent state, and records only affected nodes for transform
 composition. Partial plans select complete dirty-root scopes; they cannot
 start beneath a pending dirty ancestor.
 
-Work that can execute in parallel consumes dependency levels. Motion,
-procedural animation, Inochi puppet evaluation, and engine synchronization are
-separate operations over the same scene and ordering data.
+Work that can execute in parallel consumes dependency levels. Motion is a
+separate extension over the same scene and ordering data: a sorted sparse set
+identifies moving nodes, a fixed-step policy integrates their local transforms,
+and the existing dirty planner propagates only the resulting affected
+subtrees. Procedural animation, Inochi puppet evaluation, and engine
+synchronization remain separate operations over that shared representation.
 
 Scene operations select data and describe transformations. Generic operations
 own iteration, early termination, scheduling, and possible CPU, SIMD, task, or
@@ -40,6 +43,9 @@ GPU execution strategies.
 
 Dense runtime scene state is indexed by frozen `NodeHandle` values, while
 authoring state and sparse optional state can be keyed by `StableNodeId`.
+Motion is optional runtime state and is stored sparsely in deterministic
+`NodeHandle` order. Stationary state is represented by absence rather than a
+dense disabled record.
 Incremental scene freeze remaps surviving transform records through stable
 identity and compares stable parent identity before retaining a cached world
 value. Dense-handle changes caused only by ordering do not invalidate worlds.

@@ -140,7 +140,7 @@ int main()
     }
 
     const scene_polytree::motion::motion_state<fake_vector, fake_vector> motion{};
-    if (!motion.enabled)
+    if (motion.linear_velocity.value != 0 || motion.angular_velocity.value != 0)
     {
         return 10;
     }

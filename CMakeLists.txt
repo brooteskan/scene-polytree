@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.24)
 
 project(
     scene-polytree
-    VERSION 0.3.0
+    VERSION 0.4.0
     DESCRIPTION "Engine-neutral scene hierarchy composed over a functional polytree"
     LANGUAGES CXX
 )
@@ -19,6 +19,16 @@ option(
     SCENE_POLYTREE_BUILD_TESTS
     "Build scene-polytree contract tests"
     ${_scene_polytree_tests_default}
+)
+option(
+    SCENE_POLYTREE_BUILD_EXAMPLES
+    "Build scene-polytree examples"
+    ${PROJECT_IS_TOP_LEVEL}
+)
+option(
+    SCENE_POLYTREE_BUILD_BENCHMARKS
+    "Build scene-polytree benchmarks"
+    OFF
 )
 set(
     SCENE_POLYTREE_POLYTREE_SOURCE_DIR
@@ -69,6 +79,17 @@ target_link_libraries(scene_polytree_motion INTERFACE scene-polytree::core)
 
 if(SCENE_POLYTREE_BUILD_TESTS)
     enable_testing()
+endif()
+
+if(SCENE_POLYTREE_BUILD_EXAMPLES OR SCENE_POLYTREE_BUILD_TESTS)
+    add_subdirectory(examples)
+endif()
+
+if(SCENE_POLYTREE_BUILD_BENCHMARKS)
+    add_subdirectory(benchmarks)
+endif()
+
+if(SCENE_POLYTREE_BUILD_TESTS)
     add_subdirectory(tests)
 endif()
 
