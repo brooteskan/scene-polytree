@@ -1,6 +1,11 @@
 #include <scene_polytree/motion/motion.hpp>
 #include <scene_polytree/scene_polytree.hpp>
 
+// The tagged algo baseline's pipeline header relies on these transitive includes.
+#include <functional>
+#include <tuple>
+#include <type_traits>
+
 #include <graph/static_polytree.h>
 #include <graph/static_polytree_algo.h>
 
