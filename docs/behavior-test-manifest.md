@@ -135,11 +135,12 @@ dependency closure.
 | `static_polytree_algo.h` | `walk_path_from_root` | Root-to-node edges | Caller scratch | Returns false for `INVALID_NODE` or insufficient scratch; root succeeds with zero visits | path, root, invalid, insufficient-scratch tests | **Covered** |
 | `static_polytree_algo.h` | `as_sink` | Pipeline stage order inside traversal order | Adapter itself allocates nothing | Converts pipeline/sink rejection to traversal `false` | BFS/DFS filter and early-termination tests | **Covered** at baseline and after migration to `algo::next`. |
 
-## Current stabilized `polytree` v0.1.0
+## Current `polytree` v0.2.0
 
-These rows describe immutable `polytree` tag `v0.1.0`, commit
-`0a84af11df7eb0a016009d2f93cfc0ca272e507d`. The historical rows above remain
-the Wozzits baseline comparison rather than the current API contract.
+These rows describe `polytree` tag `v0.2.0`, based on the stabilized static
+contract at commit `0a84af11df7eb0a016009d2f93cfc0ca272e507d` and the mutable/freeze
+implementation at commit `6a7e2ee401cb755a40512ab7b4630becf2eb9950`. The historical rows above remain the
+Wozzits baseline comparison rather than the current API contract.
 
 | Source/API | Operation or observable contract | Ordering | Allocation | Termination/error behavior | Test evidence | Status/notes |
 |---|---|---|---|---|---|---|
@@ -147,8 +148,10 @@ the Wozzits baseline comparison rather than the current API contract.
 | `static_polytree.h` | `depth_first_order`, `breadth_first_order`, `ancestor_order` | DFS retains reverse stored-sibling order; BFS retains stored-sibling breadth order; ancestors are immediate-parent first | Owning contiguous vectors, respectively `O(subtree)`, `O(subtree)`, and `O(depth)` | Full valid-tree orders; invalid handles remain unchecked | exact-order, visitor parity, 10,000-node chain, and 4,096-child tests | **Current** |
 | `static_polytree.h` / `static_polytree_algo.h` | Visitor and sink adapters | Consume the same canonical owning order | Canonical-order allocation; adapters add none | Visitors complete; sinks return `algo::next::execution_status` and stop pushing at first rejection | direct BFS/DFS/ancestor status and pipeline-sink propagation tests | **Current** |
 | `static_polytree_algo.h` | Scratch materializers | Preserve canonical order and the baseline root-first truncated prefix | Canonical-order allocation plus caller scratch | `PolytreeMaterialization` exposes the written span and explicit completed/truncated status; exact capacity completes | complete, truncated, empty-root, forest-root, and root-first tests | **Current** |
+| `mutable_polytree.h` | Stable identity and ordered insertion, reparent, detach, payload replacement, and subtree deletion | Explicit root and child order | Authoring records and payloads allocate independently of static storage | Logical mutation failures are atomic; cycle and one-parent invariants are enforced at mutation boundaries; successful mutations increment the source revision once | identity, ordering, cycle, invalid ordinal, deletion, payload, and deep-chain tests | **Current** |
+| `polytree_freeze.h` | Validation, deterministic freeze, and bidirectional identity maps | Canonical root-first preorder assigns dense handles; child insertion order is preserved; cached static plan ordering is unchanged | Compact topology allocation, owned identity maps, and reusable caller workspace are reported separately | Invalid topology returns an explicit error; unchanged input freezes repeatedly to equal observable topology and maps | exact forest, mapping, repeated-freeze, stale-revision, empty, and deep-chain tests plus `scene_polytree.contracts` | **Current** |
 | Control-flow policy | Static-polytree implementation and tests | N/A | N/A | CMake policy test rejects handwritten C++ loops; legacy `static_dag.h` is outside the current polytree dependency closure | `polytree.no_handwritten_loops` | **Current** |
-| `evaluation_plan_view` | Scene-facing non-owning projection of the generic plan | Retains topological, reverse, root, dependency, and level-offset ranges without reordering | None | Out-of-range dependency levels are empty | `scene_polytree.contracts` constructs the view from a real v0.1.0 plan | **Current** |
+| `evaluation_plan_view` | Legacy type spelling for the generic `PolytreeEvaluationPlan` | Exactly the generic cached plan | None | Out-of-range dependency levels are empty | `scene_polytree.contracts` consumes `evaluation_plan` directly from frozen topology | **Legacy alias**; generic field names are authoritative. |
 
 ## Wozzits scene behavior reference
 
@@ -166,18 +169,17 @@ the Wozzits baseline comparison rather than the current API contract.
 | `scene_graph.h` | `update_animated` | Supplied animated-list order | None in algo | Recomputes only listed nodes and marks them clean; caller must ensure parent worlds are valid | animated propagation/clean tests | **Covered** for the fixture contract. |
 | `scene_graph.h` | Mutable scene payload boundary | N/A | N/A | Static topology exposes const payload spans; scene mutates through `const_cast` | Source observation | **Gap/intentional correction**: scene-polytree must use explicit mutable state separate from topology. |
 
-## Required follow-up before mutable freeze semantics
+## Mutable freeze integration
 
-Issue #5 must preserve the stabilized generic contract and define the remaining
-authoring-specific behavior:
+Issue #5 is represented by the v0.2.0 dependency contract and the current
+scene contract test:
 
-1. Preserve child insertion order through freeze and use v0.1.0's ascending
-   root range and cached evaluation plan rather than creating a second schedule.
-2. Define stable authoring identity separately from dense runtime handles.
-3. Define iterator/reference invalidation and atomic failure rules for every
-   mutation.
-4. Return explicit authoring-to-runtime and runtime-to-authoring maps from
-   freeze.
-5. Test repeated freeze determinism against all v0.1.0 plan views.
-6. Keep topology immutable at runtime and scene state explicitly mutable;
-   do not carry forward the Wozzits `const_cast` pattern.
+1. Child and root order compile deterministically into the existing cached
+   static evaluation plan.
+2. `StableNodeId` is distinct from dense runtime `NodeHandle`.
+3. Mutation failure and range/reference invalidation rules are documented in
+   polytree's `MUTABLE.md` and covered by tests.
+4. Freeze returns both identity directions and its source revision.
+5. Repeated freeze compares all generic plan views and identity maps.
+6. `basic_scene` composes mutable or static topology with separate scene state;
+   runtime topology remains immutable and no `const_cast` pattern is retained.

@@ -35,7 +35,7 @@ function(scene_polytree_require_polytree)
     FetchContent_Declare(
         polytree
         GIT_REPOSITORY https://github.com/brooteskan/polytree.git
-        GIT_TAG v0.1.0
+        GIT_TAG v0.2.0
         GIT_SHALLOW TRUE
     )
     FetchContent_MakeAvailable(polytree)

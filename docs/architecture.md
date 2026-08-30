@@ -9,13 +9,14 @@ the topology's traversal surface.
 
 ## Authoring and runtime
 
-The intended authoring form uses a mutable polytree. A compile operation will
-validate and freeze that topology into a static polytree plus an evaluation
-plan. `polytree` v0.1.0 supplies cached topological, reverse-topological, root,
-and dependency-level orders; freeze must return those generic views rather than
+The authoring form uses `MutablePolytree` with stable authoring identity. A
+freeze operation validates and compiles that topology into a compact static
+polytree, cached evaluation plans, bidirectional authoring/runtime identity
+maps, and a source revision. `polytree` v0.2.0 owns this operation and its
+ordering rules; scene-polytree consumes the generic result rather than
 constructing a second scene-specific schedule.
 
-The word "compile" is deliberately narrow here. It means producing compact
+The word "freeze" is deliberately narrow here. It means producing compact
 topology and evaluation metadata; it does not mean mirroring an engine's scene
 database or creating a second entity/component system.
 
@@ -32,10 +33,15 @@ GPU execution strategies.
 
 ## Storage
 
-Topology and scene state remain separate concerns. Dense scene state may be
-indexed by runtime node handles, while sparse optional state such as motion can
-live in side stores keyed by stable node identity. The concrete choice must be
-benchmarked before becoming part of the persistent file format or ABI.
+Dense runtime scene state is indexed by frozen `NodeHandle` values, while
+authoring state and sparse optional state can be keyed by `StableNodeId`.
+Freeze mappings are immutable snapshots: any successful authoring mutation
+changes the source revision, so a later runtime snapshot must use the later
+mapping. The mapping and old runtime scene remain valid as an older snapshot.
+
+Mutable topology, compact runtime topology, and scene state remain separate
+objects. A `basic_scene` composes either topology form with its corresponding
+state without introducing separate hierarchy semantics.
 
 ## O3DE
 

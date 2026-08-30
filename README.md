@@ -27,7 +27,7 @@ O3DE adapter
 The repository does not privately copy the Wozzits polytree headers. Its core
 target requires `polytree::polytree` by default. CMake uses an explicitly
 provided source checkout or installed package when available, otherwise it
-fetches the stabilized `polytree` v0.1.0 release. That package resolves
+fetches the mutable/freeze-capable `polytree` v0.2.0 release. That package resolves
 `algo::algo` in the same way.
 
 ## Initial targets
@@ -38,8 +38,10 @@ fetches the stabilized `polytree` v0.1.0 release. That package resolves
 - `scene-polytree::o3de`: reserved for the optional O3DE Gem adapter; it will
   not become the owner of scene topology.
 
-The contract tests instantiate a real three-node hull, turret, and gun
-hierarchy using the extracted static polytree. Transform propagation remains a
+The contract tests instantiate a mutable three-node hull, turret, and gun
+authoring hierarchy, freeze it into compact runtime topology, verify both
+identity directions and cached evaluation plans, then reparent and freeze again
+to demonstrate explicit snapshot invalidation. Transform propagation remains a
 later milestone and will be implemented exclusively through the generic
 package APIs.
 
