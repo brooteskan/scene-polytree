@@ -1,0 +1,7 @@
+scene-polytree is informed by the scene graph, functional algorithm, and static
+polytree work in the Wozzits Engine project:
+
+    https://github.com/brooteskan/wozzits
+
+The initial repository scaffold contains no copied Wozzits implementation
+headers. Future extractions must preserve the applicable MIT attribution.
