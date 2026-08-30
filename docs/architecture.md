@@ -11,8 +11,9 @@ the topology's traversal surface.
 
 The intended authoring form uses a mutable polytree. A compile operation will
 validate and freeze that topology into a static polytree plus an evaluation
-plan. The plan exposes cached topological, reverse-topological, and level-based
-orders supplied by the generic topology layer.
+plan. `polytree` v0.1.0 supplies cached topological, reverse-topological, root,
+and dependency-level orders; freeze must return those generic views rather than
+constructing a second scene-specific schedule.
 
 The word "compile" is deliberately narrow here. It means producing compact
 topology and evaluation metadata; it does not mean mirroring an engine's scene

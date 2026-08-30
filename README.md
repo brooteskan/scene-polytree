@@ -27,8 +27,8 @@ O3DE adapter
 The repository does not privately copy the Wozzits polytree headers. Its core
 target requires `polytree::polytree` by default. CMake uses an explicitly
 provided source checkout or installed package when available, otherwise it
-fetches the tagged Wozzits baseline. That package resolves `algo::algo` in the
-same way.
+fetches the stabilized `polytree` v0.1.0 release. That package resolves
+`algo::algo` in the same way.
 
 ## Initial targets
 
