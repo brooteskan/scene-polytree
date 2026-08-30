@@ -1,16 +1,15 @@
 #include <scene_polytree/motion/motion.hpp>
 #include <scene_polytree/scene_polytree.hpp>
 
+#include <graph/static_polytree.h>
+#include <graph/static_polytree_algo.h>
+
 #include <array>
 #include <cstdint>
+#include <utility>
 
 namespace
 {
-    struct fake_topology
-    {
-        std::uint32_t node_count{};
-    };
-
     struct fake_scene_state
     {
         std::uint64_t revision{};
@@ -29,16 +28,48 @@ namespace
 
 int main()
 {
-    scene_polytree::basic_scene scene{fake_topology{3}, fake_scene_state{7}};
-    if (scene.topology().node_count != 3 || scene.state().revision != 7)
+    wz::core::graph::PolytreeBuilder<std::uint32_t, std::uint32_t> builder;
+    const auto hull = wz::core::graph::add_node(builder, std::uint32_t{10});
+    const auto turret = wz::core::graph::add_node(builder, std::uint32_t{20});
+    const auto gun = wz::core::graph::add_node(builder, std::uint32_t{30});
+    if (!wz::core::graph::add_edge(builder, hull, turret, std::uint32_t{100})
+        || !wz::core::graph::add_edge(builder, turret, gun, std::uint32_t{200}))
     {
         return 1;
+    }
+
+    auto topology = wz::core::graph::build(std::move(builder));
+    if (!topology)
+    {
+        return 2;
+    }
+
+    scene_polytree::basic_scene scene{std::move(*topology), fake_scene_state{7}};
+    const auto& tree = scene.topology().polytree;
+    if (wz::core::graph::node_count(tree) != 3
+        || wz::core::graph::edge_count(tree) != 2
+        || wz::core::graph::parent(tree, hull) != wz::core::graph::INVALID_NODE
+        || wz::core::graph::parent(tree, turret) != hull
+        || wz::core::graph::parent(tree, gun) != turret
+        || wz::core::graph::depth(tree, gun) != 2
+        || scene.state().revision != 7)
+    {
+        return 3;
+    }
+
+    const auto topology_order = wz::core::graph::topo_order(tree);
+    if (topology_order.size() != 3
+        || topology_order[0] != hull
+        || topology_order[1] != turret
+        || topology_order[2] != gun)
+    {
+        return 4;
     }
 
     scene_polytree::transform_record<fake_transform> transform{};
     if (!transform.dirty || transform.local_revision != 0 || transform.world_revision != 0)
     {
-        return 2;
+        return 5;
     }
 
     constexpr std::array<std::uint32_t, 3> order{0, 1, 2};
@@ -46,13 +77,13 @@ int main()
     const scene_polytree::evaluation_plan_view<std::uint32_t> plan{order, offsets};
     if (plan.empty() || plan.node_count() != 3 || plan.level_count() != 2)
     {
-        return 3;
+        return 6;
     }
 
     const scene_polytree::motion::motion_state<fake_vector, fake_vector> motion{};
     if (!motion.enabled)
     {
-        return 4;
+        return 7;
     }
 
     return 0;

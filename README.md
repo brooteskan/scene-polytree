@@ -24,10 +24,11 @@ motion extension
 O3DE adapter
 ```
 
-The repository does not privately copy the Wozzits polytree headers. During
-bootstrap, its public scene contracts can be built without a concrete polytree
-package. Set `SCENE_POLYTREE_REQUIRE_POLYTREE=ON` once a CMake package exporting
-`polytree::polytree` is available.
+The repository does not privately copy the Wozzits polytree headers. Its core
+target requires `polytree::polytree` by default. CMake uses an explicitly
+provided source checkout or installed package when available, otherwise it
+fetches the tagged Wozzits baseline. That package resolves `algo::algo` in the
+same way.
 
 ## Initial targets
 
@@ -37,10 +38,10 @@ package. Set `SCENE_POLYTREE_REQUIRE_POLYTREE=ON` once a CMake package exporting
 - `scene-polytree::o3de`: reserved for the optional O3DE Gem adapter; it will
   not become the owner of scene topology.
 
-The initial commit deliberately establishes contracts and repository policy
-before importing a concrete topology implementation. The next implementation
-milestone is to package the generic `algo` and `polytree` dependencies, then add
-transform propagation exclusively through those APIs.
+The contract tests instantiate a real three-node hull, turret, and gun
+hierarchy using the extracted static polytree. Transform propagation remains a
+later milestone and will be implemented exclusively through the generic
+package APIs.
 
 ## Build and test
 
@@ -48,6 +49,15 @@ transform propagation exclusively through those APIs.
 cmake -S . -B build -DSCENE_POLYTREE_BUILD_TESTS=ON
 cmake --build build
 ctest --test-dir build --output-on-failure
+```
+
+For offline development with sibling checkouts:
+
+```sh
+cmake -S . -B build \
+  -DSCENE_POLYTREE_BUILD_TESTS=ON \
+  -DSCENE_POLYTREE_POLYTREE_SOURCE_DIR=/path/to/polytree \
+  -DSCENE_POLYTREE_ALGO_SOURCE_DIR=/path/to/algo
 ```
 
 Run the source-policy check directly with:

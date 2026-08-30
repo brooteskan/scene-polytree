@@ -23,7 +23,19 @@ option(
 option(
     SCENE_POLYTREE_REQUIRE_POLYTREE
     "Require and link the external polytree::polytree package"
-    OFF
+    ON
+)
+set(
+    SCENE_POLYTREE_POLYTREE_SOURCE_DIR
+    ""
+    CACHE PATH
+    "Optional path to a polytree source checkout"
+)
+set(
+    SCENE_POLYTREE_ALGO_SOURCE_DIR
+    ""
+    CACHE PATH
+    "Optional path to an algo source checkout used by polytree"
 )
 
 add_library(scene_polytree INTERFACE)
@@ -40,7 +52,12 @@ target_include_directories(
 if(SCENE_POLYTREE_REQUIRE_POLYTREE)
     include(cmake/Dependencies.cmake)
     scene_polytree_require_polytree()
-    target_link_libraries(scene_polytree INTERFACE polytree::polytree)
+    target_link_libraries(
+        scene_polytree
+        INTERFACE
+            $<BUILD_INTERFACE:polytree::polytree>
+            $<INSTALL_INTERFACE:polytree::polytree>
+    )
 endif()
 
 add_library(scene_polytree_motion INTERFACE)
