@@ -66,5 +66,10 @@ Run the source-policy check directly with:
 python tools/check_control_flow_policy.py
 ```
 
-See [docs/architecture.md](docs/architecture.md) and
-[CONTRIBUTING.md](CONTRIBUTING.md) before adding traversal or evaluation code.
+Before adding traversal or evaluation code, see:
+
+- [Architecture](docs/architecture.md)
+- [Extraction inventory](docs/extraction-inventory.md)
+- [Behavior-to-test manifest](docs/behavior-test-manifest.md)
+- [Baseline test report](docs/baseline-test-report.md)
+- [Contributing rules](CONTRIBUTING.md)
