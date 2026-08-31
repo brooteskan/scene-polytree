@@ -8,6 +8,8 @@
 #include <AzCore/Component/Component.h>
 #include <AzCore/Component/TickBus.h>
 #include <AzCore/std/parallel/mutex.h>
+#include <AzFramework/Entity/GameEntityContextBus.h>
+#include <AzFramework/Spawnable/RootSpawnableInterface.h>
 
 #include <memory>
 #include <unordered_map>
@@ -15,9 +17,13 @@
 #include <vector>
 
 namespace ScenePolytree {
-class ScenePolytreeSystemComponent final : public AZ::Component,
-                                           public AZ::TickBus::Handler,
-                                           public ScenePolytreeRequestBus::Handler {
+class ScenePolytreeSystemComponent final
+    : public AZ::Component,
+      public AZ::TickBus::Handler,
+      public ScenePolytreeRequestBus::Handler,
+      public ScenePolytreeRegistrationRequests,
+      public AzFramework::GameEntityContextEventBus::Handler,
+      public AzFramework::RootSpawnableNotificationBus::Handler {
   public:
     AZ_COMPONENT(ScenePolytreeSystemComponent, ScenePolytreeSystemComponentTypeId);
 
@@ -28,8 +34,18 @@ class ScenePolytreeSystemComponent final : public AZ::Component,
     void Activate() override;
     void Deactivate() override;
 
+    SceneHandle CreateScene(const ScenePolytreeSceneDescriptor &descriptor) override;
     SceneHandle CreateTankScene(const TankSceneDescriptor &descriptor) override;
     void DestroyScene(SceneHandle scene) override;
+    SlotResult ReserveSlot(SpawnerHandle spawner) override;
+    ScenePolytreeResultCode PlaceSlot(SlotHandle slot, const AZ::Transform &rootWorld) override;
+    ScenePolytreeResultCode
+    BindSlot(SlotHandle slot, const AZStd::vector<ScenePolytreeEntityBinding> &bindings) override;
+    ScenePolytreeResultCode UnbindSlot(SlotHandle slot) override;
+    ScenePolytreeResultCode ResetSlot(SlotHandle slot) override;
+    ScenePolytreeResultCode ReleaseSlot(SlotHandle slot) override;
+    NodeResult ResolveNode(SlotHandle slot, const AZ::Name &bindingId) const override;
+    TankHandle ResolveTank(SlotHandle slot) const override;
     bool BindTankEntities(TankHandle tank, const TankEntityBindings &bindings) override;
     bool RemoveTankEntities(TankHandle tank) override;
     bool MarkTankReady(TankHandle tank) override;
@@ -38,12 +54,29 @@ class ScenePolytreeSystemComponent final : public AZ::Component,
     bool RequestCorrection(const SceneCorrection &correction) override;
     SceneStatistics GetSceneStatistics(SceneHandle scene) const override;
     bool IsSceneAlive(SceneHandle scene) const override;
+    bool IsSceneReady(SceneHandle scene) const override;
+
+    ScenePolytreeResultCode RegisterSceneEntity(AZ::EntityId sceneEntity, bool isDefault) override;
+    void UnregisterSceneEntity(AZ::EntityId sceneEntity) override;
+    RegistrationResult
+    RegisterPrefab(AZ::EntityId ownerEntity, AZ::EntityId targetScene,
+                   const ScenePolytreePrefabRegistrationDescriptor &descriptor) override;
+    void UnregisterPrefab(RegistrationToken token) override;
+
+    void OnGameEntitiesStarted() override;
+    void OnGameEntitiesReset() override;
+    void OnRootSpawnableReady(AZ::Data::Asset<AzFramework::Spawnable> rootSpawnable,
+                              AZ::u32 generation) override;
 
     void OnTick(float deltaTime, AZ::ScriptTimePoint time) override;
     int GetTickOrder() override;
 
   private:
     struct CreateCommand {
+        SceneHandle m_scene;
+        ScenePolytreeSceneDescriptor m_descriptor;
+    };
+    struct CreateTankCommand {
         SceneHandle m_scene;
         TankSceneDescriptor m_descriptor;
     };
@@ -56,6 +89,23 @@ class ScenePolytreeSystemComponent final : public AZ::Component,
     };
     struct UnbindCommand {
         TankHandle m_tank;
+    };
+    struct PlaceSlotCommand {
+        SlotHandle m_slot;
+        AZ::Transform m_rootWorld{AZ::Transform::CreateIdentity()};
+    };
+    struct BindSlotCommand {
+        SlotHandle m_slot;
+        AZStd::vector<ScenePolytreeEntityBinding> m_bindings;
+    };
+    struct UnbindSlotCommand {
+        SlotHandle m_slot;
+    };
+    struct ResetSlotCommand {
+        SlotHandle m_slot;
+    };
+    struct ReleaseSlotCommand {
+        SlotHandle m_slot;
     };
     struct ReadyCommand {
         TankHandle m_tank;
@@ -71,13 +121,27 @@ class ScenePolytreeSystemComponent final : public AZ::Component,
     struct CorrectionCommand {
         SceneCorrection m_correction;
     };
-    using Command = std::variant<CreateCommand, DestroyCommand, BindCommand, UnbindCommand,
-                                 ReadyCommand, ActiveCommand, IntentCommand, CorrectionCommand>;
+    using Command = std::variant<CreateCommand, CreateTankCommand, DestroyCommand, PlaceSlotCommand,
+                                 BindSlotCommand, UnbindSlotCommand, ResetSlotCommand,
+                                 ReleaseSlotCommand, BindCommand, UnbindCommand, ReadyCommand,
+                                 ActiveCommand, IntentCommand, CorrectionCommand>;
 
     enum class SceneLife : AZ::u8 { Pending, Alive, Destroying };
     struct SceneEntry {
         std::unique_ptr<Internal::SceneInstance> m_instance;
         SceneLife m_life{SceneLife::Pending};
+    };
+
+    struct RegisteredSceneEntity {
+        AZ::EntityId m_entity;
+        bool m_default{};
+    };
+
+    struct PendingPrefabRegistration {
+        RegistrationToken m_token;
+        AZ::EntityId m_ownerEntity;
+        AZ::EntityId m_targetScene;
+        ScenePolytreePrefabRegistrationDescriptor m_descriptor;
     };
 
     [[nodiscard]] Internal::SceneInstance *FindScene(SceneHandle scene);
@@ -86,7 +150,13 @@ class ScenePolytreeSystemComponent final : public AZ::Component,
     void Enqueue(Command command);
     void DrainCommands();
     void Process(const CreateCommand &command);
+    void Process(const CreateTankCommand &command);
     void Process(const DestroyCommand &command);
+    void Process(const PlaceSlotCommand &command);
+    void Process(const BindSlotCommand &command);
+    void Process(const UnbindSlotCommand &command);
+    void Process(const ResetSlotCommand &command);
+    void Process(const ReleaseSlotCommand &command);
     void Process(const BindCommand &command);
     void Process(const UnbindCommand &command);
     void Process(const ReadyCommand &command);
@@ -98,6 +168,10 @@ class ScenePolytreeSystemComponent final : public AZ::Component,
     mutable AZStd::recursive_mutex m_mutex;
     std::unordered_map<AZ::u64, SceneEntry> m_scenes;
     std::vector<Command> m_commands;
+    AZStd::vector<RegisteredSceneEntity> m_registeredSceneEntities;
+    AZStd::vector<PendingPrefabRegistration> m_pendingPrefabRegistrations;
     AZ::u64 m_nextSceneId{1};
+    AZ::u64 m_nextRegistrationId{1};
+    bool m_collectionClosed{};
 };
 } // namespace ScenePolytree

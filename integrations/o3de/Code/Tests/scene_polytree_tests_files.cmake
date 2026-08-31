@@ -1,4 +1,5 @@
 set(FILES
+    PrefabTopologyTests.cpp
     SceneInstanceTests.cpp
     SystemComponentTests.cpp
     TankIntentTests.cpp

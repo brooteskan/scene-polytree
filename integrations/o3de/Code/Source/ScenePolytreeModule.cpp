@@ -5,6 +5,8 @@ ScenePolytreeModule::ScenePolytreeModule() {
     m_descriptors.insert(m_descriptors.end(),
                          {
                              ScenePolytreeSystemComponent::CreateDescriptor(),
+                             ScenePolytreeComponent::CreateDescriptor(),
+                             ScenePolytreePrefabNodeComponent::CreateDescriptor(),
                              PlayerTankIntentAdapterComponent::CreateDescriptor(),
                              AiTankIntentAdapterComponent::CreateDescriptor(),
                              ScenePolytreeTankSpawnerComponent::CreateDescriptor(),

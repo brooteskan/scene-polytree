@@ -1,4 +1,5 @@
 #include <ScenePolytree/ScenePolytreeBus.h>
+#include <ScenePolytree/ScenePolytreeComponent.h>
 #include <ScenePolytree/Tank/AiTankIntentAdapterComponent.h>
 #include <ScenePolytree/Tank/PlayerTankIntentAdapterComponent.h>
 #include <ScenePolytree/Tank/ScenePolytreeTankSpawnerComponent.h>
@@ -13,6 +14,7 @@ namespace ScenePolytree::Tests {
 static_assert(!std::is_base_of_v<AZ::TickBus::Handler, PlayerTankIntentAdapterComponent>);
 static_assert(!std::is_base_of_v<AZ::TickBus::Handler, AiTankIntentAdapterComponent>);
 static_assert(!std::is_base_of_v<AZ::TickBus::Handler, ScenePolytreeTankSpawnerComponent>);
+static_assert(!std::is_base_of_v<AZ::TickBus::Handler, ScenePolytreeComponent>);
 static_assert(!std::is_base_of_v<AZ::TickBus::Handler, TankNodeBindingComponent>);
 
 TEST(ScenePolytreeTankIntentTests, PlayerAndAiProduceTheSameIntentContract) {

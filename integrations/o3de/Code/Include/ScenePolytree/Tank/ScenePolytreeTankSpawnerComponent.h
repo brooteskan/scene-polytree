@@ -19,11 +19,14 @@ class ScenePolytreeTankSpawnerConfig final : public AZ::ComponentConfig {
     static void Reflect(AZ::ReflectContext *context);
 
     AZ::Data::Asset<AzFramework::Spawnable> m_tankPrefab;
+    AZ::EntityId m_sceneEntity;
     AZ::u32 m_aiTankCount{3};
     float m_spacing{8.0f};
 };
 
-class ScenePolytreeTankSpawnerComponent final : public AZ::Component {
+class ScenePolytreeTankSpawnerComponent final
+    : public AZ::Component,
+      public ScenePolytreeRegistrationNotificationBus::Handler {
   public:
     AZ_COMPONENT_DECL(ScenePolytreeTankSpawnerComponent);
 
@@ -43,11 +46,19 @@ class ScenePolytreeTankSpawnerComponent final : public AZ::Component {
     bool ReadInConfig(const AZ::ComponentConfig *baseConfig) override;
     bool WriteOutConfig(AZ::ComponentConfig *outBaseConfig) const override;
 
+    void OnScenePolytreeRegistrationReady(RegistrationToken token, SpawnerHandle spawner) override;
+    void OnScenePolytreeRegistrationFailed(RegistrationToken token,
+                                           const ScenePolytreeFailure &failure) override;
+
   private:
-    void SpawnTank(AZ::u32 tankIndex, const AZ::Transform &spawnTransform);
+    void BeginSpawning();
+    void SpawnTank(TankHandle tank, SlotHandle slot, bool isPlayer,
+                   const AZ::Transform &spawnTransform);
 
     ScenePolytreeTankSpawnerConfig m_configuration;
-    SceneHandle m_scene;
+    RegistrationToken m_registration;
+    SpawnerHandle m_spawner;
+    AZStd::vector<SlotHandle> m_slots;
     AZStd::vector<AZStd::unique_ptr<AzFramework::SpawnableEntitiesContainer>> m_spawnedTanks;
 };
 } // namespace ScenePolytree

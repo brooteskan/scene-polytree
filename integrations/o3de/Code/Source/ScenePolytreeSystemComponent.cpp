@@ -31,16 +31,38 @@ void ScenePolytreeSystemComponent::GetIncompatibleServices(
 
 void ScenePolytreeSystemComponent::Activate() {
     AZ::Interface<ScenePolytreeRequests>::Register(this);
+    AZ::Interface<ScenePolytreeRegistrationRequests>::Register(this);
     ScenePolytreeRequestBus::Handler::BusConnect();
+    AzFramework::GameEntityContextEventBus::Handler::BusConnect();
+    AzFramework::RootSpawnableNotificationBus::Handler::BusConnect();
 }
 
 void ScenePolytreeSystemComponent::Deactivate() {
     AZStd::scoped_lock lock(m_mutex);
     AZ::TickBus::Handler::BusDisconnect();
+    AzFramework::RootSpawnableNotificationBus::Handler::BusDisconnect();
+    AzFramework::GameEntityContextEventBus::Handler::BusDisconnect();
     ScenePolytreeRequestBus::Handler::BusDisconnect();
+    AZ::Interface<ScenePolytreeRegistrationRequests>::Unregister(this);
     AZ::Interface<ScenePolytreeRequests>::Unregister(this);
     m_commands.clear();
     m_scenes.clear();
+    m_registeredSceneEntities.clear();
+    m_pendingPrefabRegistrations.clear();
+    m_collectionClosed = false;
+}
+
+SceneHandle
+ScenePolytreeSystemComponent::CreateScene(const ScenePolytreeSceneDescriptor &descriptor) {
+    AZStd::scoped_lock lock(m_mutex);
+    if (descriptor.m_fixedStepNanoseconds <= 0 || descriptor.m_maxCatchUpSteps == 0 ||
+        (descriptor.m_permanentNodes.empty() && descriptor.m_partitions.empty())) {
+        return {};
+    }
+    const SceneHandle handle{m_nextSceneId++};
+    m_scenes.emplace(handle.m_value, SceneEntry{});
+    Enqueue(CreateCommand{handle, descriptor});
+    return handle;
 }
 
 SceneHandle ScenePolytreeSystemComponent::CreateTankScene(const TankSceneDescriptor &descriptor) {
@@ -51,7 +73,7 @@ SceneHandle ScenePolytreeSystemComponent::CreateTankScene(const TankSceneDescrip
     }
     const SceneHandle handle{m_nextSceneId++};
     m_scenes.emplace(handle.m_value, SceneEntry{});
-    Enqueue(CreateCommand{handle, descriptor});
+    Enqueue(CreateTankCommand{handle, descriptor});
     return handle;
 }
 
@@ -62,6 +84,84 @@ void ScenePolytreeSystemComponent::DestroyScene(SceneHandle scene) {
         found->second.m_life = SceneLife::Destroying;
         Enqueue(DestroyCommand{scene});
     }
+}
+
+SlotResult ScenePolytreeSystemComponent::ReserveSlot(SpawnerHandle spawner) {
+    AZStd::scoped_lock lock(m_mutex);
+    Internal::SceneInstance *scene = FindScene(spawner.m_scene);
+    return scene != nullptr ? scene->ReserveSlot(spawner)
+                            : SlotResult{AcceptsCommands(spawner.m_scene)
+                                             ? ScenePolytreeResultCode::SceneNotReady
+                                             : ScenePolytreeResultCode::SceneNotFound,
+                                         {}};
+}
+
+ScenePolytreeResultCode ScenePolytreeSystemComponent::PlaceSlot(SlotHandle slot,
+                                                                const AZ::Transform &rootWorld) {
+    AZStd::scoped_lock lock(m_mutex);
+    if (!AcceptsCommands(slot.m_spawner.m_scene)) {
+        return ScenePolytreeResultCode::SceneNotFound;
+    }
+    if (!rootWorld.IsFinite()) {
+        return ScenePolytreeResultCode::InvalidTransform;
+    }
+    Enqueue(PlaceSlotCommand{slot, rootWorld});
+    return ScenePolytreeResultCode::Success;
+}
+
+ScenePolytreeResultCode
+ScenePolytreeSystemComponent::BindSlot(SlotHandle slot,
+                                       const AZStd::vector<ScenePolytreeEntityBinding> &bindings) {
+    AZStd::scoped_lock lock(m_mutex);
+    if (!AcceptsCommands(slot.m_spawner.m_scene)) {
+        return ScenePolytreeResultCode::SceneNotFound;
+    }
+    if (bindings.empty()) {
+        return ScenePolytreeResultCode::InvalidBinding;
+    }
+    Enqueue(BindSlotCommand{slot, bindings});
+    return ScenePolytreeResultCode::Success;
+}
+
+ScenePolytreeResultCode ScenePolytreeSystemComponent::UnbindSlot(SlotHandle slot) {
+    AZStd::scoped_lock lock(m_mutex);
+    if (!AcceptsCommands(slot.m_spawner.m_scene)) {
+        return ScenePolytreeResultCode::SceneNotFound;
+    }
+    Enqueue(UnbindSlotCommand{slot});
+    return ScenePolytreeResultCode::Success;
+}
+
+ScenePolytreeResultCode ScenePolytreeSystemComponent::ResetSlot(SlotHandle slot) {
+    AZStd::scoped_lock lock(m_mutex);
+    if (!AcceptsCommands(slot.m_spawner.m_scene)) {
+        return ScenePolytreeResultCode::SceneNotFound;
+    }
+    Enqueue(ResetSlotCommand{slot});
+    return ScenePolytreeResultCode::Success;
+}
+
+ScenePolytreeResultCode ScenePolytreeSystemComponent::ReleaseSlot(SlotHandle slot) {
+    AZStd::scoped_lock lock(m_mutex);
+    if (!AcceptsCommands(slot.m_spawner.m_scene)) {
+        return ScenePolytreeResultCode::SceneNotFound;
+    }
+    Enqueue(ReleaseSlotCommand{slot});
+    return ScenePolytreeResultCode::Success;
+}
+
+NodeResult ScenePolytreeSystemComponent::ResolveNode(SlotHandle slot,
+                                                     const AZ::Name &bindingId) const {
+    AZStd::scoped_lock lock(m_mutex);
+    const Internal::SceneInstance *scene = FindScene(slot.m_spawner.m_scene);
+    return scene != nullptr ? scene->ResolveNode(slot, bindingId)
+                            : NodeResult{ScenePolytreeResultCode::SceneNotReady, {}};
+}
+
+TankHandle ScenePolytreeSystemComponent::ResolveTank(SlotHandle slot) const {
+    AZStd::scoped_lock lock(m_mutex);
+    const Internal::SceneInstance *scene = FindScene(slot.m_spawner.m_scene);
+    return scene != nullptr ? scene->ResolveTank(slot) : TankHandle{};
 }
 
 bool ScenePolytreeSystemComponent::BindTankEntities(TankHandle tank,
@@ -130,6 +230,140 @@ bool ScenePolytreeSystemComponent::IsSceneAlive(SceneHandle scene) const {
     return AcceptsCommands(scene);
 }
 
+bool ScenePolytreeSystemComponent::IsSceneReady(SceneHandle scene) const {
+    AZStd::scoped_lock lock(m_mutex);
+    return FindScene(scene) != nullptr;
+}
+
+ScenePolytreeResultCode ScenePolytreeSystemComponent::RegisterSceneEntity(AZ::EntityId sceneEntity,
+                                                                          bool isDefault) {
+    AZStd::scoped_lock lock(m_mutex);
+    if (m_collectionClosed) {
+        return ScenePolytreeResultCode::RegistrationClosed;
+    }
+    const auto found =
+        std::ranges::find(m_registeredSceneEntities, sceneEntity, &RegisteredSceneEntity::m_entity);
+    if (!sceneEntity.IsValid() || found != m_registeredSceneEntities.end()) {
+        return ScenePolytreeResultCode::InvalidBinding;
+    }
+    m_registeredSceneEntities.push_back({sceneEntity, isDefault});
+    return ScenePolytreeResultCode::Success;
+}
+
+void ScenePolytreeSystemComponent::UnregisterSceneEntity(AZ::EntityId sceneEntity) {
+    AZStd::scoped_lock lock(m_mutex);
+    AZStd::erase_if(m_registeredSceneEntities,
+                    [&](const auto &entry) { return entry.m_entity == sceneEntity; });
+}
+
+RegistrationResult ScenePolytreeSystemComponent::RegisterPrefab(
+    AZ::EntityId ownerEntity, AZ::EntityId targetScene,
+    const ScenePolytreePrefabRegistrationDescriptor &descriptor) {
+    AZStd::scoped_lock lock(m_mutex);
+    if (m_collectionClosed) {
+        return {ScenePolytreeResultCode::RegistrationClosed, {}};
+    }
+    if (!ownerEntity.IsValid() || !descriptor.m_prefab.GetId().IsValid()) {
+        return {ScenePolytreeResultCode::InvalidPrefab, {}};
+    }
+    if (descriptor.m_capacity == 0) {
+        return {ScenePolytreeResultCode::ZeroCapacity, {}};
+    }
+    if (descriptor.m_registrationKey.IsEmpty() ||
+        std::ranges::any_of(m_pendingPrefabRegistrations, [&](const auto &entry) {
+            return entry.m_ownerEntity == ownerEntity &&
+                   entry.m_descriptor.m_registrationKey == descriptor.m_registrationKey;
+        })) {
+        return {ScenePolytreeResultCode::DuplicateBindingId, {}};
+    }
+    const RegistrationToken token{m_nextRegistrationId++};
+    m_pendingPrefabRegistrations.push_back({token, ownerEntity, targetScene, descriptor});
+    return {ScenePolytreeResultCode::Success, token};
+}
+
+void ScenePolytreeSystemComponent::UnregisterPrefab(RegistrationToken token) {
+    AZStd::scoped_lock lock(m_mutex);
+    AZStd::erase_if(m_pendingPrefabRegistrations,
+                    [&](const auto &entry) { return entry.m_token == token; });
+}
+
+void ScenePolytreeSystemComponent::OnGameEntitiesStarted() {
+    // O3DE emits this before its asynchronous root Spawnable has necessarily activated entities.
+    // Collection closes in OnRootSpawnableReady instead.
+}
+
+void ScenePolytreeSystemComponent::OnRootSpawnableReady(
+    [[maybe_unused]] AZ::Data::Asset<AzFramework::Spawnable> rootSpawnable,
+    [[maybe_unused]] AZ::u32 generation) {
+    AZStd::scoped_lock lock(m_mutex);
+    if (m_collectionClosed) {
+        return;
+    }
+    m_collectionClosed = true;
+
+    AZStd::vector<AZ::EntityId> defaults;
+    std::ranges::transform(m_registeredSceneEntities | std::views::filter([](const auto &entry) {
+                               return entry.m_default;
+                           }),
+                           std::back_inserter(defaults), &RegisteredSceneEntity::m_entity);
+
+    auto sorted = m_pendingPrefabRegistrations;
+    std::ranges::sort(sorted, [](const auto &left, const auto &right) {
+        const auto leftOwner = static_cast<AZ::u64>(left.m_ownerEntity);
+        const auto rightOwner = static_cast<AZ::u64>(right.m_ownerEntity);
+        return leftOwner != rightOwner ? leftOwner < rightOwner
+                                       : left.m_descriptor.m_registrationKey.GetStringView() <
+                                             right.m_descriptor.m_registrationKey.GetStringView();
+    });
+
+    std::ranges::for_each(m_registeredSceneEntities, [&](const auto &sceneEntry) {
+        AZStd::vector<ResolvedScenePolytreeRegistration> resolved;
+        AZ::u64 nextPartition = 1;
+        std::ranges::for_each(sorted, [&](const auto &registration) {
+            const bool usesDefault = !registration.m_targetScene.IsValid();
+            const bool targetsScene =
+                usesDefault ? defaults.size() == 1 && defaults.front() == sceneEntry.m_entity
+                            : registration.m_targetScene == sceneEntry.m_entity;
+            if (targetsScene) {
+                resolved.push_back({registration.m_token, registration.m_ownerEntity,
+                                    nextPartition++, registration.m_descriptor});
+            }
+        });
+        ScenePolytreeComponentRequestBus::Event(
+            sceneEntry.m_entity, &ScenePolytreeComponentRequests::BeginBuild, resolved);
+    });
+
+    std::ranges::for_each(sorted, [&](const auto &registration) {
+        const bool usesDefault = !registration.m_targetScene.IsValid();
+        const bool explicitTargetExists =
+            !usesDefault && std::ranges::any_of(m_registeredSceneEntities, [&](const auto &entry) {
+                return entry.m_entity == registration.m_targetScene;
+            });
+        const auto failureCode =
+            usesDefault && defaults.empty()         ? ScenePolytreeResultCode::MissingDefaultScene
+            : usesDefault && defaults.size() != 1   ? ScenePolytreeResultCode::DuplicateDefaultScene
+            : !usesDefault && !explicitTargetExists ? ScenePolytreeResultCode::SceneNotFound
+                                                    : ScenePolytreeResultCode::Success;
+        if (failureCode != ScenePolytreeResultCode::Success) {
+            ScenePolytreeRegistrationNotificationBus::Event(
+                registration.m_ownerEntity,
+                &ScenePolytreeRegistrationNotifications::OnScenePolytreeRegistrationFailed,
+                registration.m_token,
+                ScenePolytreeFailure{failureCode,
+                                     registration.m_descriptor.m_registrationKey,
+                                     registration.m_descriptor.m_prefab.GetId(),
+                                     {}});
+        }
+    });
+}
+
+void ScenePolytreeSystemComponent::OnGameEntitiesReset() {
+    AZStd::scoped_lock lock(m_mutex);
+    m_collectionClosed = false;
+    m_registeredSceneEntities.clear();
+    m_pendingPrefabRegistrations.clear();
+}
+
 void ScenePolytreeSystemComponent::OnTick(float deltaTime,
                                           [[maybe_unused]] AZ::ScriptTimePoint time) {
     AZStd::scoped_lock lock(m_mutex);
@@ -190,6 +424,27 @@ void ScenePolytreeSystemComponent::Process(const CreateCommand &command) {
     found->second.m_instance = Internal::SceneInstance::Create(command.m_descriptor);
     if (found->second.m_instance) {
         found->second.m_life = SceneLife::Alive;
+        ScenePolytreeSystemNotificationBus::Event(command.m_scene.m_value,
+                                                  &ScenePolytreeSystemNotifications::OnSceneReady,
+                                                  command.m_scene);
+    } else {
+        const ScenePolytreeFailure failure{ScenePolytreeResultCode::ConstructionFailed};
+        ScenePolytreeSystemNotificationBus::Event(command.m_scene.m_value,
+                                                  &ScenePolytreeSystemNotifications::OnSceneFailed,
+                                                  command.m_scene, failure);
+        AZ_Error("ScenePolytree", false, "Failed to create a queued shared scene.");
+        m_scenes.erase(found);
+    }
+}
+
+void ScenePolytreeSystemComponent::Process(const CreateTankCommand &command) {
+    const auto found = m_scenes.find(command.m_scene.m_value);
+    if (found == m_scenes.end() || found->second.m_life != SceneLife::Pending) {
+        return;
+    }
+    found->second.m_instance = Internal::SceneInstance::Create(command.m_descriptor);
+    if (found->second.m_instance) {
+        found->second.m_life = SceneLife::Alive;
     } else {
         AZ_Error("ScenePolytree", false, "Failed to create a queued tank scene.");
         m_scenes.erase(found);
@@ -198,6 +453,38 @@ void ScenePolytreeSystemComponent::Process(const CreateCommand &command) {
 
 void ScenePolytreeSystemComponent::Process(const DestroyCommand &command) {
     m_scenes.erase(command.m_scene.m_value);
+}
+
+void ScenePolytreeSystemComponent::Process(const PlaceSlotCommand &command) {
+    if (Internal::SceneInstance *scene = FindScene(command.m_slot.m_spawner.m_scene)) {
+        (void)scene->PlaceSlot(command.m_slot, command.m_rootWorld);
+    }
+}
+
+void ScenePolytreeSystemComponent::Process(const BindSlotCommand &command) {
+    if (Internal::SceneInstance *scene = FindScene(command.m_slot.m_spawner.m_scene)) {
+        const auto result = scene->BindSlot(command.m_slot, command.m_bindings);
+        AZ_Error("ScenePolytree", result == ScenePolytreeResultCode::Success,
+                 "Rejected an invalid shared-scene slot binding.");
+    }
+}
+
+void ScenePolytreeSystemComponent::Process(const UnbindSlotCommand &command) {
+    if (Internal::SceneInstance *scene = FindScene(command.m_slot.m_spawner.m_scene)) {
+        (void)scene->UnbindSlot(command.m_slot);
+    }
+}
+
+void ScenePolytreeSystemComponent::Process(const ResetSlotCommand &command) {
+    if (Internal::SceneInstance *scene = FindScene(command.m_slot.m_spawner.m_scene)) {
+        (void)scene->ResetSlot(command.m_slot);
+    }
+}
+
+void ScenePolytreeSystemComponent::Process(const ReleaseSlotCommand &command) {
+    if (Internal::SceneInstance *scene = FindScene(command.m_slot.m_spawner.m_scene)) {
+        (void)scene->ReleaseSlot(command.m_slot);
+    }
 }
 
 void ScenePolytreeSystemComponent::Process(const BindCommand &command) {
@@ -215,11 +502,10 @@ void ScenePolytreeSystemComponent::Process(const BindCommand &command) {
     bool valid = application != nullptr && command.m_bindings.IsComplete();
     const auto indices = std::views::iota(std::size_t{}, entityIds.size());
     valid = valid && std::ranges::all_of(indices, [&](std::size_t left) {
-        const auto later = std::views::iota(left + 1, entityIds.size());
-        return std::ranges::all_of(later, [&](std::size_t right) {
-            return entityIds[left] != entityIds[right];
-        });
-    });
+                const auto later = std::views::iota(left + 1, entityIds.size());
+                return std::ranges::all_of(
+                    later, [&](std::size_t right) { return entityIds[left] != entityIds[right]; });
+            });
     std::ranges::for_each(indices, [&](std::size_t index) {
         AZ::Entity *entity = valid ? application->FindEntity(entityIds[index]) : nullptr;
         auto *transform = valid ? AZ::TransformBus::FindFirstHandler(entityIds[index]) : nullptr;

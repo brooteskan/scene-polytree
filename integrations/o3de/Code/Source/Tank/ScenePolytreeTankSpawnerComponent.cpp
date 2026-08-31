@@ -108,8 +108,9 @@ AZ_COMPONENT_IMPL(ScenePolytreeTankSpawnerComponent, "ScenePolytreeTankSpawnerCo
 void ScenePolytreeTankSpawnerConfig::Reflect(AZ::ReflectContext *context) {
     if (auto *serializeContext = azrtti_cast<AZ::SerializeContext *>(context)) {
         serializeContext->Class<ScenePolytreeTankSpawnerConfig, AZ::ComponentConfig>()
-            ->Version(1)
+            ->Version(2)
             ->Field("TankPrefab", &ScenePolytreeTankSpawnerConfig::m_tankPrefab)
+            ->Field("SceneEntity", &ScenePolytreeTankSpawnerConfig::m_sceneEntity)
             ->Field("AiTankCount", &ScenePolytreeTankSpawnerConfig::m_aiTankCount)
             ->Field("Spacing", &ScenePolytreeTankSpawnerConfig::m_spacing);
 
@@ -125,6 +126,10 @@ void ScenePolytreeTankSpawnerConfig::Reflect(AZ::ReflectContext *context) {
                               &ScenePolytreeTankSpawnerConfig::m_tankPrefab, "Tank Prefab",
                               "Spawnable whose Hull, Turret, and Gun entities are projected by "
                               "scene-polytree.")
+                ->DataElement(AZ::Edit::UIHandlers::Default,
+                              &ScenePolytreeTankSpawnerConfig::m_sceneEntity,
+                              "Scene Polytree Entity",
+                              "Optional explicit level forest; empty resolves the level default.")
                 ->DataElement(AZ::Edit::UIHandlers::Default,
                               &ScenePolytreeTankSpawnerConfig::m_aiTankCount, "AI Tank Count",
                               "Number of AI tanks in addition to the player tank.")
@@ -178,44 +183,38 @@ ScenePolytreeTankSpawnerComponent::ScenePolytreeTankSpawnerComponent(
     : m_configuration(configuration) {}
 
 void ScenePolytreeTankSpawnerComponent::Activate() {
-    auto *requests = AZ::Interface<ScenePolytreeRequests>::Get();
-    if (requests == nullptr || !m_configuration.m_tankPrefab.GetId().IsValid()) {
+    auto *registry = AZ::Interface<ScenePolytreeRegistrationRequests>::Get();
+    if (registry == nullptr || !m_configuration.m_tankPrefab.GetId().IsValid()) {
         AZ_Warning("ScenePolytree", false,
                    "Tank spawner requires the ScenePolytree system and a tank prefab.");
         return;
     }
-
-    AZ::Transform origin = AZ::Transform::CreateIdentity();
-    AZ::TransformBus::EventResult(origin, GetEntityId(), &AZ::TransformBus::Events::GetWorldTM);
-
-    TankSceneDescriptor descriptor;
     const AZ::u32 tankCount = m_configuration.m_aiTankCount + 1;
-    descriptor.m_spawnTransforms.reserve(tankCount);
-    const auto tankIndices = std::views::iota(AZ::u32{}, tankCount);
-    std::ranges::transform(
-        tankIndices, std::back_inserter(descriptor.m_spawnTransforms), [&](AZ::u32 index) {
-            return origin * AZ::Transform::CreateTranslation(
-                                AZ::Vector3(m_configuration.m_spacing * index, 0.0f, 0.0f));
-        });
-
-    m_scene = requests->CreateTankScene(descriptor);
-    if (!m_scene.IsValid()) {
-        AZ_Error("ScenePolytree", false, "Failed to create the tank runtime forest.");
-        return;
+    ScenePolytreeRegistrationNotificationBus::Handler::BusConnect(GetEntityId());
+    const auto result =
+        registry->RegisterPrefab(GetEntityId(), m_configuration.m_sceneEntity,
+                                 {m_configuration.m_tankPrefab, tankCount, AZ::Name("Tank")});
+    if (!result.IsSuccess()) {
+        ScenePolytreeRegistrationNotificationBus::Handler::BusDisconnect();
+        AZ_Error("ScenePolytree", false, "Failed to register the tank Prefab with a level forest.");
+    } else {
+        m_registration = result.m_token;
     }
-
-    m_spawnedTanks.reserve(tankCount);
-    std::ranges::for_each(
-        tankIndices, [&](AZ::u32 index) { SpawnTank(index, descriptor.m_spawnTransforms[index]); });
 }
 
 void ScenePolytreeTankSpawnerComponent::Deactivate() {
-    if (auto *requests = AZ::Interface<ScenePolytreeRequests>::Get()) {
-        requests->DestroyScene(m_scene);
-    }
-    m_scene = {};
     std::ranges::for_each(m_spawnedTanks, [](auto &container) { container->Clear(); });
     m_spawnedTanks.clear();
+    if (auto *requests = AZ::Interface<ScenePolytreeRequests>::Get()) {
+        std::ranges::for_each(m_slots, [&](SlotHandle slot) { (void)requests->ReleaseSlot(slot); });
+    }
+    m_slots.clear();
+    if (auto *registry = AZ::Interface<ScenePolytreeRegistrationRequests>::Get()) {
+        registry->UnregisterPrefab(m_registration);
+    }
+    ScenePolytreeRegistrationNotificationBus::Handler::BusDisconnect();
+    m_registration = {};
+    m_spawner = {};
 }
 
 bool ScenePolytreeTankSpawnerComponent::ReadInConfig(const AZ::ComponentConfig *baseConfig) {
@@ -235,12 +234,62 @@ bool ScenePolytreeTankSpawnerComponent::WriteOutConfig(AZ::ComponentConfig *outB
     return false;
 }
 
-void ScenePolytreeTankSpawnerComponent::SpawnTank(AZ::u32 tankIndex,
+void ScenePolytreeTankSpawnerComponent::OnScenePolytreeRegistrationReady(RegistrationToken token,
+                                                                         SpawnerHandle spawner) {
+    if (token != m_registration || m_spawner.IsValid()) {
+        return;
+    }
+    m_spawner = spawner;
+    BeginSpawning();
+}
+
+void ScenePolytreeTankSpawnerComponent::OnScenePolytreeRegistrationFailed(
+    RegistrationToken token, const ScenePolytreeFailure &failure) {
+    if (token == m_registration) {
+        AZ_Error("ScenePolytree", false,
+                 "Tank Prefab registration failed with ScenePolytree result code %u.",
+                 static_cast<AZ::u32>(failure.m_code));
+    }
+}
+
+void ScenePolytreeTankSpawnerComponent::BeginSpawning() {
+    auto *requests = AZ::Interface<ScenePolytreeRequests>::Get();
+    if (requests == nullptr || !m_spawner.IsValid()) {
+        return;
+    }
+
+    AZ::Transform origin = AZ::Transform::CreateIdentity();
+    AZ::TransformBus::EventResult(origin, GetEntityId(), &AZ::TransformBus::Events::GetWorldTM);
+    const AZ::u32 tankCount = m_configuration.m_aiTankCount + 1;
+    m_slots.reserve(tankCount);
+    m_spawnedTanks.reserve(tankCount);
+    const auto tankIndices = std::views::iota(AZ::u32{}, tankCount);
+    std::ranges::for_each(tankIndices, [&](AZ::u32 index) {
+        const AZ::Transform spawnTransform =
+            origin * AZ::Transform::CreateTranslation(
+                         AZ::Vector3(m_configuration.m_spacing * index, 0.0f, 0.0f));
+        const SlotResult reserved = requests->ReserveSlot(m_spawner);
+        if (!reserved.IsSuccess()) {
+            AZ_Error("ScenePolytree", false, "Tank spawner exhausted its registered capacity.");
+            return;
+        }
+        const auto placed = requests->PlaceSlot(reserved.m_handle, spawnTransform);
+        const TankHandle tank = requests->ResolveTank(reserved.m_handle);
+        if (placed != ScenePolytreeResultCode::Success || !tank.IsValid()) {
+            (void)requests->ReleaseSlot(reserved.m_handle);
+            AZ_Error("ScenePolytree", false,
+                     "Registered tank topology did not resolve Hull, Turret, and Gun nodes.");
+            return;
+        }
+        m_slots.push_back(reserved.m_handle);
+        SpawnTank(tank, reserved.m_handle, index == 0, spawnTransform);
+    });
+}
+
+void ScenePolytreeTankSpawnerComponent::SpawnTank(TankHandle tank, SlotHandle slot, bool isPlayer,
                                                   const AZ::Transform &spawnTransform) {
     auto container = AZStd::make_unique<AzFramework::SpawnableEntitiesContainer>();
     container->Reset(m_configuration.m_tankPrefab);
-    const TankHandle tank{m_scene, tankIndex};
-    const bool isPlayer = tankIndex == 0;
 
     AzFramework::SpawnAllEntitiesOptionalArgs optionalArgs;
     optionalArgs
@@ -279,8 +328,8 @@ void ScenePolytreeTankSpawnerComponent::SpawnTank(AZ::u32 tankIndex,
     };
 
     optionalArgs.m_completionCallback =
-        [tank, isPlayer]([[maybe_unused]] AzFramework::EntitySpawnTicket::Id ticketId,
-                         AzFramework::SpawnableConstEntityContainerView entities) {
+        [tank, slot, isPlayer]([[maybe_unused]] AzFramework::EntitySpawnTicket::Id ticketId,
+                               AzFramework::SpawnableConstEntityContainerView entities) {
             const AZ::Entity *adapterEntity = FindArticulationEntity(entities);
             const AZ::EntityId adapterEntityId =
                 adapterEntity != nullptr
@@ -310,12 +359,13 @@ void ScenePolytreeTankSpawnerComponent::SpawnTank(AZ::u32 tankIndex,
                 rolesAreUnique && turretPivot != nullptr ? turretPivot->GetId() : AZ::EntityId{},
                 rolesAreUnique && gunPivot != nullptr ? gunPivot->GetId() : AZ::EntityId{},
             };
-            AZ::TickBus::QueueFunction([tank, isPlayer, adapterEntityId, bindings]() {
+            AZ::TickBus::QueueFunction([tank, slot, isPlayer, adapterEntityId, bindings]() {
                 auto *requests = AZ::Interface<ScenePolytreeRequests>::Get();
                 if (requests == nullptr || !requests->IsSceneAlive(tank.m_scene)) {
                     return;
                 }
                 if (!requests->BindTankEntities(tank, bindings)) {
+                    (void)requests->ReleaseSlot(slot);
                     AZ_Error("ScenePolytree", false,
                              "Tank spawn did not provide complete projection bindings.");
                     return;

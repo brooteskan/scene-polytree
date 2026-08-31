@@ -64,7 +64,86 @@ struct WrittenTransform {
     result.SetUniformScale(scale);
     return result;
 }
+
+[[nodiscard]] AZStd::vector<ScenePolytreeNodeDescriptor> MakeGenericTopology() {
+    return {
+        {AZ::Name("Root"), AZ::Name(), ScenePolytreeNodeType::Transform,
+         ScenePolytreeJointType::None, AZ::Transform::CreateIdentity()},
+        {AZ::Name("Child"), AZ::Name("Root"), ScenePolytreeNodeType::Transform,
+         ScenePolytreeJointType::Fixed,
+         AZ::Transform::CreateTranslation(AZ::Vector3::CreateAxisZ())},
+    };
+}
 } // namespace
+
+TEST(ScenePolytreeSceneInstanceTests, SharedPartitionsReserveAndResolveIsolatedSlots) {
+    ScenePolytreeSceneDescriptor descriptor;
+    descriptor.m_partitions = {
+        {11, 2, MakeGenericTopology()},
+        {22, 1, MakeGenericTopology()},
+    };
+    auto scene = Internal::SceneInstance::Create(descriptor);
+    ASSERT_NE(scene, nullptr);
+    EXPECT_EQ(scene->GetStatistics().m_partitionCount, 2);
+    EXPECT_EQ(scene->GetStatistics().m_slotCapacity, 3);
+
+    const SceneHandle sceneHandle{77};
+    const SpawnerHandle firstSpawner{sceneHandle, 11, 1};
+    const SpawnerHandle secondSpawner{sceneHandle, 22, 1};
+    const SlotResult first = scene->ReserveSlot(firstSpawner);
+    const SlotResult second = scene->ReserveSlot(secondSpawner);
+    ASSERT_TRUE(first.IsSuccess());
+    ASSERT_TRUE(second.IsSuccess());
+    EXPECT_TRUE(scene->ResolveNode(first.m_handle, AZ::Name("Child")).IsSuccess());
+    EXPECT_TRUE(scene->ResolveNode(second.m_handle, AZ::Name("Child")).IsSuccess());
+    EXPECT_EQ(scene->GetStatistics().m_reservedSlotCount, 2);
+
+    const AZStd::vector<ScenePolytreeEntityBinding> firstBindings{
+        {AZ::Name("Root"), AZ::EntityId(1001), AZ::Transform::CreateIdentity()},
+        {AZ::Name("Child"), AZ::EntityId(1002), AZ::Transform::CreateIdentity()},
+    };
+    EXPECT_EQ(scene->BindSlot(first.m_handle, firstBindings), ScenePolytreeResultCode::Success);
+    EXPECT_EQ(scene->GetStatistics().m_boundSlotCount, 1);
+    EXPECT_EQ(scene->BindSlot(second.m_handle, firstBindings),
+              ScenePolytreeResultCode::InvalidBinding);
+}
+
+TEST(ScenePolytreeSceneInstanceTests, ReleasedSlotsInvalidateOldHandlesAndCanBeReused) {
+    ScenePolytreeSceneDescriptor descriptor;
+    descriptor.m_partitions = {{31, 1, MakeGenericTopology()}};
+    auto scene = Internal::SceneInstance::Create(descriptor);
+    ASSERT_NE(scene, nullptr);
+    const SpawnerHandle spawner{SceneHandle{88}, 31, 1};
+    const SlotResult first = scene->ReserveSlot(spawner);
+    ASSERT_TRUE(first.IsSuccess());
+    EXPECT_EQ(scene->ReleaseSlot(first.m_handle), ScenePolytreeResultCode::Success);
+    EXPECT_FALSE(scene->ResolveNode(first.m_handle, AZ::Name("Root")).IsSuccess());
+
+    const SlotResult second = scene->ReserveSlot(spawner);
+    ASSERT_TRUE(second.IsSuccess());
+    EXPECT_EQ(second.m_handle.m_slot, first.m_handle.m_slot);
+    EXPECT_NE(second.m_handle.m_generation, first.m_handle.m_generation);
+}
+
+TEST(ScenePolytreeSceneInstanceTests, TankCompatiblePartitionResolvesLegacyAdapterHandle) {
+    ScenePolytreeSceneDescriptor descriptor;
+    descriptor.m_partitions = {
+        {41,
+         1,
+         {
+             {AZ::Name("Hull"), AZ::Name(), ScenePolytreeNodeType::Transform,
+              ScenePolytreeJointType::None, AZ::Transform::CreateIdentity()},
+             {AZ::Name("Turret"), AZ::Name("Hull"), ScenePolytreeNodeType::Transform,
+              ScenePolytreeJointType::Yaw, AZ::Transform::CreateIdentity()},
+             {AZ::Name("Gun"), AZ::Name("Turret"), ScenePolytreeNodeType::Transform,
+              ScenePolytreeJointType::Pitch, AZ::Transform::CreateIdentity()},
+         }}};
+    auto scene = Internal::SceneInstance::Create(descriptor);
+    ASSERT_NE(scene, nullptr);
+    const SlotResult slot = scene->ReserveSlot({SceneHandle{99}, 41, 1});
+    ASSERT_TRUE(slot.IsSuccess());
+    EXPECT_TRUE(scene->ResolveTank(slot.m_handle).IsValid());
+}
 
 TEST(ScenePolytreeSceneInstanceTests, OnePlayerAndThreeAiShareOneForest) {
     auto scene = Internal::SceneInstance::Create(MakeDescriptor());

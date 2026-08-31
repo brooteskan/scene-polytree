@@ -2,6 +2,8 @@
 
 #include "ScenePolytreeSystemComponent.h"
 
+#include <ScenePolytree/ScenePolytreeComponent.h>
+#include <ScenePolytree/ScenePolytreePrefabNodeComponent.h>
 #include <ScenePolytree/ScenePolytreeTypeIds.h>
 #include <ScenePolytree/Tank/AiTankIntentAdapterComponent.h>
 #include <ScenePolytree/Tank/PlayerTankIntentAdapterComponent.h>
