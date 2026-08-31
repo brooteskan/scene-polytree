@@ -14,4 +14,6 @@ inline constexpr const char *ScenePolytreeTankSpawnerConfigTypeId =
     "{33CEB4B2-0B86-4669-BF60-5028A6E86A3F}";
 inline constexpr const char *TankNodeBindingComponentTypeId =
     "{96880D9E-EE9C-4CB6-85A7-FD7D09362B3C}";
+inline constexpr const char *TankArticulationBindingComponentTypeId =
+    "{AF6E3C0B-8B0D-4B9B-9F6C-50CB1E2D24F1}";
 } // namespace ScenePolytree

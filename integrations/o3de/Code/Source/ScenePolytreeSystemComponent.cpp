@@ -207,12 +207,17 @@ void ScenePolytreeSystemComponent::Process(const BindCommand &command) {
     }
     auto *application = AZ::Interface<AZ::ComponentApplicationRequests>::Get();
     const std::array entityIds{
-        command.m_bindings.m_hull,
-        command.m_bindings.m_turret,
-        command.m_bindings.m_gun,
+        command.m_bindings.m_hull,        command.m_bindings.m_turret,   command.m_bindings.m_gun,
+        command.m_bindings.m_turretPivot, command.m_bindings.m_gunPivot,
     };
-    std::array<AZ::Transform, 3> targetWorldTransforms;
-    bool valid = application != nullptr;
+    std::array<AZ::Transform, 5> worldTransforms;
+    worldTransforms.fill(AZ::Transform::CreateIdentity());
+    bool valid = application != nullptr && command.m_bindings.IsComplete();
+    for (std::size_t left = 0; left < entityIds.size(); ++left) {
+        for (std::size_t right = left + 1; right < entityIds.size(); ++right) {
+            valid = valid && entityIds[left] != entityIds[right];
+        }
+    }
     const auto indices = std::views::iota(std::size_t{}, entityIds.size());
     std::ranges::for_each(indices, [&](std::size_t index) {
         AZ::Entity *entity = valid ? application->FindEntity(entityIds[index]) : nullptr;
@@ -222,13 +227,29 @@ void ScenePolytreeSystemComponent::Process(const BindCommand &command) {
                                  transform != nullptr && !transform->GetParentId().IsValid();
         valid = valid && targetValid;
         if (targetValid) {
-            targetWorldTransforms[index] = transform->GetWorldTM();
+            worldTransforms[index] = transform->GetWorldTM();
+            valid = valid && worldTransforms[index].IsFinite() &&
+                    worldTransforms[index].GetUniformScale() >= AZ::MinTransformScale;
         }
     });
-    const bool bound = valid && scene->BindProjected(command.m_tank.m_index, command.m_bindings,
-                                                     targetWorldTransforms);
+    const std::array targetWorldTransforms{
+        worldTransforms[0],
+        worldTransforms[1],
+        worldTransforms[2],
+    };
+    const std::array pivotWorldTransforms{
+        worldTransforms[3],
+        worldTransforms[4],
+    };
+    const bool pivotsAreRigid = valid &&
+                                AZ::IsClose(pivotWorldTransforms[0].GetUniformScale(), 1.0f) &&
+                                AZ::IsClose(pivotWorldTransforms[1].GetUniformScale(), 1.0f);
+    const bool bound =
+        pivotsAreRigid && scene->BindProjected(command.m_tank.m_index, command.m_bindings,
+                                               targetWorldTransforms, pivotWorldTransforms);
     AZ_Error("ScenePolytree", bound,
-             "Rejected missing, duplicate, inactive, or parented tank projection bindings.");
+             "Rejected missing, duplicate, inactive, parented, or non-rigid tank projection "
+             "and pivot bindings.");
 }
 
 void ScenePolytreeSystemComponent::Process(const UnbindCommand &command) {

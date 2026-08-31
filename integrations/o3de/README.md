@@ -20,7 +20,8 @@ repository's `scene-polytree::motion` target. Generic repository builds do not l
 - Player and AI adapters submit the same `TankIntent` and never subscribe to TickBus.
 - Only nodes returned by `changed_transform_nodes_since` are written with `SetWorldTM`.
 - Hull, turret, and gun entities are detached before spawn insertion, so O3DE has no competing
-  parent hierarchy.
+  parent hierarchy. Authored turret and gun pivot markers are detached and sampled once during
+  binding; only the three visual targets are projected afterward.
 - Spawn callbacks carry only monotonic handles and resolve the system through `AZ::Interface`;
   they never capture component or container pointers.
 - Handles are never reused. Destroying a scene immediately stops it from accepting commands;
@@ -29,15 +30,23 @@ repository's `scene-polytree::motion` target. Generic repository builds do not l
 ## Projection contract
 
 The tank spawnable must provide exactly one active, parentless target for each `TankNodeRole` by
-attaching `TankNodeBindingComponent` to its hull, turret, and gun visual entities. Missing,
-duplicate, inactive, or parented targets are rejected before scene activation. A target's authored
-world transform is captured as a constant node-to-visual offset; later synchronization writes only
-the final changed worlds produced by scene-polytree.
+attaching `TankNodeBindingComponent` to its hull, turret, and gun visual entities. The tank adapter
+entity must also provide one `TankArticulationBindingComponent` that references authored turret and
+gun pivot entities and stores a rigid asset-to-logical basis. Missing, duplicate, inactive,
+parented, non-rigid, or aliased visual/pivot bindings are rejected before scene activation.
+
+The spawner maps each normalized authored root transform through `spawn * assetToLogicalBasis`,
+then detaches the three targets and two pivot markers. Binding derives the turret local transform
+from the hull world and turret pivot, derives the gun local transform from the two pivot worlds, and
+captures each target's constant node-to-visual offset. Later synchronization writes only the final
+changed visual worlds produced by scene-polytree. Large mesh-origin offsets and uniform visual scale
+are supported; source-scene placement is not part of the articulation frame.
 
 ## Coordinate and correction policy
 
 Transforms use `AZ::Transform` and velocities use `AZ::Vector3`. +Z is up and tank forward is +Y
-in local space. Hull/turret yaw is around +Z; gun pitch is around +X.
+in logical local space. Hull/turret yaw is around +Z; gun pitch is around +X. Asset-specific facing
+is converted once by `TankArticulationBindingComponent`; motion integration remains asset agnostic.
 
 Terrain sampling and physics contacts remain host responsibilities. Feed their authoritative
 results back with `RequestCorrection`, selecting local or world space and identifying the source.

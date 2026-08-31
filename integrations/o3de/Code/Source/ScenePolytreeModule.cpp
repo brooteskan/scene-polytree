@@ -8,6 +8,7 @@ ScenePolytreeModule::ScenePolytreeModule() {
                              PlayerTankIntentAdapterComponent::CreateDescriptor(),
                              AiTankIntentAdapterComponent::CreateDescriptor(),
                              ScenePolytreeTankSpawnerComponent::CreateDescriptor(),
+                             TankArticulationBindingComponent::CreateDescriptor(),
                              TankNodeBindingComponent::CreateDescriptor(),
                          });
 }

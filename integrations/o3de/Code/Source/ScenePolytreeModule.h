@@ -6,6 +6,7 @@
 #include <ScenePolytree/Tank/AiTankIntentAdapterComponent.h>
 #include <ScenePolytree/Tank/PlayerTankIntentAdapterComponent.h>
 #include <ScenePolytree/Tank/ScenePolytreeTankSpawnerComponent.h>
+#include <ScenePolytree/Tank/TankArticulationBindingComponent.h>
 #include <ScenePolytree/Tank/TankNodeBindingComponent.h>
 
 #include <AzCore/Memory/SystemAllocator.h>

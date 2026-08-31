@@ -2,6 +2,7 @@
 
 #include <ScenePolytree/Tank/AiTankIntentAdapterComponent.h>
 #include <ScenePolytree/Tank/PlayerTankIntentAdapterComponent.h>
+#include <ScenePolytree/Tank/TankArticulationBindingComponent.h>
 #include <ScenePolytree/Tank/TankNodeBindingComponent.h>
 
 #include <AzCore/Asset/AssetSerializer.h>
@@ -16,14 +17,22 @@
 #include <AzFramework/Spawnable/SpawnableEntitiesInterface.h>
 
 #include <algorithm>
+#include <cmath>
 #include <ranges>
 
 namespace ScenePolytree {
 namespace {
-[[nodiscard]] AZ::Entity *FindNamedEntity(AzFramework::SpawnableEntityContainerView entities,
-                                          AZStd::string_view name) {
+[[nodiscard]] AZ::Entity *FindEntityById(AzFramework::SpawnableEntityContainerView entities,
+                                         AZ::EntityId entityId) {
     const auto found = std::ranges::find_if(
-        entities, [name](const AZ::Entity *entity) { return entity->GetName() == name; });
+        entities, [entityId](const AZ::Entity *entity) { return entity->GetId() == entityId; });
+    return found != entities.end() ? *found : nullptr;
+}
+
+[[nodiscard]] const AZ::Entity *
+FindEntityById(AzFramework::SpawnableConstEntityContainerView entities, AZ::EntityId entityId) {
+    const auto found = std::ranges::find_if(
+        entities, [entityId](const AZ::Entity *entity) { return entity->GetId() == entityId; });
     return found != entities.end() ? *found : nullptr;
 }
 
@@ -53,12 +62,41 @@ FindBoundEntity(AzFramework::SpawnableConstEntityContainerView entities, TankNod
            }) == 1;
 }
 
-void PrepareMappedEntity(AZ::Entity *entity, const AZ::Transform &spawnTransform) {
+[[nodiscard]] bool
+HasExactlyOneArticulationBinding(AzFramework::SpawnableConstEntityContainerView entities) {
+    return std::ranges::count_if(entities, [](const AZ::Entity *entity) {
+               return entity->FindComponent<TankArticulationBindingComponent>() != nullptr;
+           }) == 1;
+}
+
+[[nodiscard]] AZ::Entity *
+FindArticulationEntity(AzFramework::SpawnableEntityContainerView entities) {
+    const auto found = std::ranges::find_if(entities, [](AZ::Entity *entity) {
+        return entity->FindComponent<TankArticulationBindingComponent>() != nullptr;
+    });
+    return found != entities.end() ? *found : nullptr;
+}
+
+[[nodiscard]] const AZ::Entity *
+FindArticulationEntity(AzFramework::SpawnableConstEntityContainerView entities) {
+    const auto found = std::ranges::find_if(entities, [](const AZ::Entity *entity) {
+        return entity->FindComponent<TankArticulationBindingComponent>() != nullptr;
+    });
+    return found != entities.end() ? *found : nullptr;
+}
+
+[[nodiscard]] bool IsRigidBasis(const AZ::Transform &basis) {
+    return basis.IsFinite() && basis.IsOrthogonal() &&
+           std::abs(basis.GetUniformScale() - 1.0f) <= 1.0e-4f;
+}
+
+void PrepareMappedEntity(AZ::Entity *entity, const AZ::Transform &spawnTransform,
+                         const AZ::Transform &assetToLogicalBasis) {
     if (entity != nullptr) {
         if (auto *transform = entity->FindComponent<AzFramework::TransformComponent>()) {
             const AZ::Transform authoredTransform = transform->GetLocalTM();
             transform->SetParent(AZ::EntityId());
-            transform->SetWorldTM(spawnTransform * authoredTransform);
+            transform->SetWorldTM(spawnTransform * assetToLogicalBasis * authoredTransform);
         }
     }
 }
@@ -205,48 +243,72 @@ void ScenePolytreeTankSpawnerComponent::SpawnTank(AZ::u32 tankIndex,
     const bool isPlayer = tankIndex == 0;
 
     AzFramework::SpawnAllEntitiesOptionalArgs optionalArgs;
-    optionalArgs.m_preInsertionCallback =
-        [spawnTransform, isPlayer]([[maybe_unused]] AzFramework::EntitySpawnTicket::Id ticketId,
-                                   AzFramework::SpawnableEntityContainerView entities) {
-            if (entities.empty()) {
-                return;
-            }
-            AZ::Entity *adapterEntity = FindNamedEntity(entities, "Tank");
-            adapterEntity = adapterEntity != nullptr ? adapterEntity : entities[0];
-            if (auto *rootTransform =
-                    adapterEntity->FindComponent<AzFramework::TransformComponent>()) {
-                rootTransform->SetWorldTM(spawnTransform);
-            }
-            if (isPlayer) {
-                adapterEntity->CreateComponent<PlayerTankIntentAdapterComponent>();
-            } else {
-                adapterEntity->CreateComponent<AiTankIntentAdapterComponent>();
-            }
+    optionalArgs
+        .m_preInsertionCallback = [spawnTransform, isPlayer](
+                                      [[maybe_unused]] AzFramework::EntitySpawnTicket::Id ticketId,
+                                      AzFramework::SpawnableEntityContainerView entities) {
+        if (entities.empty()) {
+            return;
+        }
+        AZ::Entity *adapterEntity = FindArticulationEntity(entities);
+        adapterEntity = adapterEntity != nullptr ? adapterEntity : entities[0];
+        if (auto *rootTransform = adapterEntity->FindComponent<AzFramework::TransformComponent>()) {
+            rootTransform->SetWorldTM(spawnTransform);
+        }
+        if (isPlayer) {
+            adapterEntity->CreateComponent<PlayerTankIntentAdapterComponent>();
+        } else {
+            adapterEntity->CreateComponent<AiTankIntentAdapterComponent>();
+        }
 
-            PrepareMappedEntity(FindBoundEntity(entities, TankNodeRole::Hull), spawnTransform);
-            PrepareMappedEntity(FindBoundEntity(entities, TankNodeRole::Turret), spawnTransform);
-            PrepareMappedEntity(FindBoundEntity(entities, TankNodeRole::Gun), spawnTransform);
-        };
+        auto *articulation = adapterEntity->FindComponent<TankArticulationBindingComponent>();
+        if (articulation == nullptr || !IsRigidBasis(articulation->GetAssetToLogicalBasis())) {
+            AZ_Error("ScenePolytree", false,
+                     "Tank spawn requires one articulation binding with a rigid asset basis.");
+            return;
+        }
+
+        const AZ::Transform &basis = articulation->GetAssetToLogicalBasis();
+        PrepareMappedEntity(FindBoundEntity(entities, TankNodeRole::Hull), spawnTransform, basis);
+        PrepareMappedEntity(FindBoundEntity(entities, TankNodeRole::Turret), spawnTransform, basis);
+        PrepareMappedEntity(FindBoundEntity(entities, TankNodeRole::Gun), spawnTransform, basis);
+        PrepareMappedEntity(FindEntityById(entities, articulation->GetTurretPivot()),
+                            spawnTransform, basis);
+        PrepareMappedEntity(FindEntityById(entities, articulation->GetGunPivot()), spawnTransform,
+                            basis);
+    };
 
     optionalArgs.m_completionCallback =
         [tank, isPlayer]([[maybe_unused]] AzFramework::EntitySpawnTicket::Id ticketId,
                          AzFramework::SpawnableConstEntityContainerView entities) {
-            const auto adapterFound = std::ranges::find_if(
-                entities, [](const AZ::Entity *entity) { return entity->GetName() == "Tank"; });
+            const AZ::Entity *adapterEntity = FindArticulationEntity(entities);
             const AZ::EntityId adapterEntityId =
-                adapterFound != entities.end()
-                    ? (*adapterFound)->GetId()
+                adapterEntity != nullptr
+                    ? adapterEntity->GetId()
                     : (entities.empty() ? AZ::EntityId{} : entities[0]->GetId());
             const AZ::Entity *hull = FindBoundEntity(entities, TankNodeRole::Hull);
             const AZ::Entity *turret = FindBoundEntity(entities, TankNodeRole::Turret);
             const AZ::Entity *gun = FindBoundEntity(entities, TankNodeRole::Gun);
+            const auto *articulation =
+                adapterEntity != nullptr
+                    ? adapterEntity->FindComponent<TankArticulationBindingComponent>()
+                    : nullptr;
             const bool rolesAreUnique = HasExactlyOneBinding(entities, TankNodeRole::Hull) &&
                                         HasExactlyOneBinding(entities, TankNodeRole::Turret) &&
-                                        HasExactlyOneBinding(entities, TankNodeRole::Gun);
+                                        HasExactlyOneBinding(entities, TankNodeRole::Gun) &&
+                                        HasExactlyOneArticulationBinding(entities);
+            const AZ::Entity *turretPivot =
+                articulation != nullptr ? FindEntityById(entities, articulation->GetTurretPivot())
+                                        : nullptr;
+            const AZ::Entity *gunPivot = articulation != nullptr
+                                             ? FindEntityById(entities, articulation->GetGunPivot())
+                                             : nullptr;
             const TankEntityBindings bindings{
                 rolesAreUnique && hull != nullptr ? hull->GetId() : AZ::EntityId{},
                 rolesAreUnique && turret != nullptr ? turret->GetId() : AZ::EntityId{},
                 rolesAreUnique && gun != nullptr ? gun->GetId() : AZ::EntityId{},
+                rolesAreUnique && turretPivot != nullptr ? turretPivot->GetId() : AZ::EntityId{},
+                rolesAreUnique && gunPivot != nullptr ? gunPivot->GetId() : AZ::EntityId{},
             };
             AZ::TickBus::QueueFunction([tank, isPlayer, adapterEntityId, bindings]() {
                 auto *requests = AZ::Interface<ScenePolytreeRequests>::Get();

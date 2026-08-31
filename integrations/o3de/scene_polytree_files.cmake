@@ -4,6 +4,7 @@ set(FILES
     Code/Include/ScenePolytree/Tank/AiTankIntentAdapterComponent.h
     Code/Include/ScenePolytree/Tank/PlayerTankIntentAdapterComponent.h
     Code/Include/ScenePolytree/Tank/ScenePolytreeTankSpawnerComponent.h
+    Code/Include/ScenePolytree/Tank/TankArticulationBindingComponent.h
     Code/Include/ScenePolytree/Tank/TankNodeBindingComponent.h
     Code/Source/AzTransformPolicy.cpp
     Code/Source/AzTransformPolicy.h
@@ -14,6 +15,7 @@ set(FILES
     Code/Source/Tank/AiTankIntentAdapterComponent.cpp
     Code/Source/Tank/PlayerTankIntentAdapterComponent.cpp
     Code/Source/Tank/ScenePolytreeTankSpawnerComponent.cpp
+    Code/Source/Tank/TankArticulationBindingComponent.cpp
     Code/Source/Tank/TankNodeBindingComponent.cpp
     Code/Source/Tank/TankIntent.cpp
 )

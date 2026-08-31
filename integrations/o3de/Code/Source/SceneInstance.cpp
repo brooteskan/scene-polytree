@@ -12,18 +12,14 @@ namespace {
 [[nodiscard]] StableTankInstance InstantiateTank(SceneInstance::AuthoringScene &scene,
                                                  const AZ::Transform &spawnTransform) {
     const auto hull = scene.insert_root(TankNode::Hull, AzTransformValue(spawnTransform)).value();
-    const auto turret =
-        scene
-            .insert_child(
-                hull, TankNode::Turret, TankJoint::Turret,
-                AzTransformValue(AZ::Transform::CreateTranslation(AZ::Vector3(0.0f, 0.0f, 1.0f))))
-            .value();
-    const auto gun =
-        scene
-            .insert_child(
-                turret, TankNode::Gun, TankJoint::Gun,
-                AzTransformValue(AZ::Transform::CreateTranslation(AZ::Vector3(0.0f, 1.0f, 0.25f))))
-            .value();
+    const auto turret = scene
+                            .insert_child(hull, TankNode::Turret, TankJoint::Turret,
+                                          AzTransformValue(AZ::Transform::CreateIdentity()))
+                            .value();
+    const auto gun = scene
+                         .insert_child(turret, TankNode::Gun, TankJoint::Gun,
+                                       AzTransformValue(AZ::Transform::CreateIdentity()))
+                         .value();
     return {hull, turret, gun};
 }
 
@@ -94,12 +90,23 @@ bool SceneInstance::Bind(AZ::u32 tankIndex, const TankEntityBindings &bindings) 
 }
 
 bool SceneInstance::BindProjected(AZ::u32 tankIndex, const TankEntityBindings &bindings,
-                                  const std::array<AZ::Transform, 3> &targetWorldTransforms) {
+                                  const std::array<AZ::Transform, 3> &targetWorldTransforms,
+                                  const std::array<AZ::Transform, 2> &pivotWorldTransforms) {
     if (tankIndex >= m_tanks.size() || !bindings.IsComplete()) {
         return false;
     }
 
     const RuntimeTankInstance &tank = m_tanks[tankIndex];
+    EvaluateDirty();
+    const AZ::Transform hullWorld = m_runtime.state().world(tank.m_hull).m_value;
+    const AZ::Transform turretLocal = hullWorld.GetInverse() * pivotWorldTransforms[0];
+    const AZ::Transform gunLocal = pivotWorldTransforms[0].GetInverse() * pivotWorldTransforms[1];
+    if (m_runtime.set_local(tank.m_turret, AzTransformValue(turretLocal)) !=
+            scene_polytree::transform_error::none ||
+        m_runtime.set_local(tank.m_gun, AzTransformValue(gunLocal)) !=
+            scene_polytree::transform_error::none) {
+        return false;
+    }
     EvaluateDirty();
     const std::array nodes{tank.m_hull, tank.m_turret, tank.m_gun};
     std::array<AZ::Transform, 3> nodeToTargets;

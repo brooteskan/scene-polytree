@@ -53,7 +53,8 @@ class SceneInstance final {
 
     bool Bind(AZ::u32 tankIndex, const TankEntityBindings &bindings);
     bool BindProjected(AZ::u32 tankIndex, const TankEntityBindings &bindings,
-                       const std::array<AZ::Transform, 3> &targetWorldTransforms);
+                       const std::array<AZ::Transform, 3> &targetWorldTransforms,
+                       const std::array<AZ::Transform, 2> &pivotWorldTransforms);
     bool Unbind(AZ::u32 tankIndex);
     bool MarkReady(AZ::u32 tankIndex);
     bool SetActive(bool active);

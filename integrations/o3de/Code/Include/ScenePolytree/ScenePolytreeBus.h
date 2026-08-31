@@ -71,8 +71,11 @@ struct TankEntityBindings {
     AZ::EntityId m_hull;
     AZ::EntityId m_turret;
     AZ::EntityId m_gun;
+    AZ::EntityId m_turretPivot;
+    AZ::EntityId m_gunPivot;
     [[nodiscard]] bool IsComplete() const noexcept {
-        return m_hull.IsValid() && m_turret.IsValid() && m_gun.IsValid();
+        return m_hull.IsValid() && m_turret.IsValid() && m_gun.IsValid() &&
+               m_turretPivot.IsValid() && m_gunPivot.IsValid();
     }
 };
 
