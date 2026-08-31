@@ -110,6 +110,29 @@ int registration_and_ordering() {
         active.mutation_generation() != generation || active.size() != 2) {
         return 6;
     }
+
+    const auto lifecycle_generation = active.mutation_generation();
+    if (active.deactivate(third_runtime) != scene_polytree::motion::motion_error::none ||
+        active.size() != 1 || active.records().front().node != second_runtime ||
+        active.mutation_generation() != lifecycle_generation + 1) {
+        return 7;
+    }
+    const auto generation_after_deactivate = active.mutation_generation();
+    if (active.deactivate(first_runtime) != scene_polytree::motion::motion_error::none ||
+        active.mutation_generation() != generation_after_deactivate ||
+        active.deactivate(wz::core::graph::INVALID_NODE) !=
+            scene_polytree::motion::motion_error::invalid_node) {
+        return 8;
+    }
+    active.clear();
+    if (!active.empty() || active.mutation_generation() != generation_after_deactivate + 1) {
+        return 9;
+    }
+    const auto generation_after_clear = active.mutation_generation();
+    active.clear();
+    if (active.mutation_generation() != generation_after_clear) {
+        return 10;
+    }
     return 0;
 }
 
@@ -250,6 +273,84 @@ int validation_is_non_mutating() {
     }
     return 0;
 }
+
+int deterministic_replay() {
+    authoring_scene authoring;
+    const auto root = authoring.insert_root(1u, translation{10}).value();
+    const auto child = authoring.insert_child(root, 2u, 1u, translation{20}).value();
+    const auto grandchild = authoring.insert_child(child, 3u, 2u, translation{30}).value();
+    wz::core::graph::FreezeWorkspace freeze_workspace;
+    auto frozen = scene_polytree::freeze_scene(authoring, freeze_workspace);
+    if (!frozen) {
+        return 30;
+    }
+    auto runtime = std::move(frozen).value();
+    const auto runtime_root = runtime.identities().runtime_handle(root).value();
+    const auto runtime_child = runtime.identities().runtime_handle(child).value();
+    const auto runtime_grandchild = runtime.identities().runtime_handle(grandchild).value();
+
+    auto first_state = runtime.state();
+    auto second_state = runtime.state();
+    active_set first_active{runtime.topology()};
+    active_set second_active{runtime.topology()};
+    scalar_policy first_policy;
+    scalar_policy second_policy;
+
+    if (first_active.set(runtime_grandchild, {4, -1}, first_policy) !=
+            scene_polytree::motion::motion_error::none ||
+        first_active.set(runtime_root, {1, 0}, first_policy) !=
+            scene_polytree::motion::motion_error::none ||
+        first_active.set(runtime_child, {2, 1}, first_policy) !=
+            scene_polytree::motion::motion_error::none ||
+        second_active.set(runtime_child, {2, 1}, second_policy) !=
+            scene_polytree::motion::motion_error::none ||
+        second_active.set(runtime_grandchild, {4, -1}, second_policy) !=
+            scene_polytree::motion::motion_error::none ||
+        second_active.set(runtime_root, {1, 0}, second_policy) !=
+            scene_polytree::motion::motion_error::none) {
+        return 31;
+    }
+
+    scene_polytree::motion::fixed_step_sequence first_sequence{std::chrono::seconds{1}, 7};
+    scene_polytree::motion::fixed_step_sequence second_sequence{std::chrono::seconds{1}, 7};
+    scene_polytree::motion::motion_evaluation_workspace<translation> first_motion_workspace;
+    scene_polytree::motion::motion_evaluation_workspace<translation> second_motion_workspace;
+    scene_polytree::transform_evaluation_workspace first_transform_workspace;
+    scene_polytree::transform_evaluation_workspace second_transform_workspace;
+
+    const auto states_match = [&] {
+        return first_state.revision() == second_state.revision() &&
+               std::ranges::equal(first_state.records(), second_state.records(),
+                                  [](const auto &left, const auto &right) {
+                                      return left.local == right.local && left.world == right.world &&
+                                             left.local_revision == right.local_revision &&
+                                             left.world_revision == right.world_revision &&
+                                             left.dirty == right.dirty;
+                                  });
+    };
+    const auto advance_pair = [&](std::uint64_t expected_tick) {
+        const auto first = scene_polytree::motion::advance_motion_scene(
+            runtime.topology(), first_state, first_active, first_sequence, first_motion_workspace,
+            first_transform_workspace, first_policy, first_policy);
+        const auto second = scene_polytree::motion::advance_motion_scene(
+            runtime.topology(), second_state, second_active, second_sequence,
+            second_motion_workspace, second_transform_workspace, second_policy, second_policy);
+        return first && second && first.step.tick == expected_tick &&
+               second.step.tick == expected_tick && first.step.delta == std::chrono::seconds{1} &&
+               second.step.delta == std::chrono::seconds{1} &&
+               std::ranges::equal(first.integrated_nodes, second.integrated_nodes) &&
+               std::ranges::equal(first.changed_nodes, second.changed_nodes) && states_match();
+    };
+
+    if (!advance_pair(7) || !advance_pair(8) || !advance_pair(9) ||
+        first_sequence.next_tick() != 10 || second_sequence.next_tick() != 10 ||
+        first_state.local(runtime_root) != translation{13} ||
+        first_state.local(runtime_child) != translation{29} ||
+        first_state.local(runtime_grandchild) != translation{39}) {
+        return 32;
+    }
+    return 0;
+}
 } // namespace
 
 int main() {
@@ -261,5 +362,9 @@ int main() {
     if (integration != 0) {
         return integration;
     }
-    return validation_is_non_mutating();
+    const auto validation = validation_is_non_mutating();
+    if (validation != 0) {
+        return validation;
+    }
+    return deterministic_replay();
 }

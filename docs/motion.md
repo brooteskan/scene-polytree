@@ -76,6 +76,29 @@ sequence rejects a non-positive duration and refuses to execute tick
 `UINT64_MAX`; callers may provide an initial tick when constructing the
 sequence. Standard allocation failures retain normal C++ exception behavior.
 
+## Determinism boundaries
+
+For the same frozen topology, initial transform state, exact ordered intent
+updates, fixed-step sequence, and motion/transform policies, the extension
+produces the same integration order, changed-node order, tick progression, and
+policy results. Active records are integrated in ascending `NodeHandle` order,
+so registration order among distinct nodes is not observable once their final
+motion states match. Multiple updates for one node in a batch are applied in
+input order and the last update determines its state.
+
+`fixed_step_sequence` is deliberately not a wall-clock scheduler. The caller
+owns elapsed-time accumulation, catch-up limits, pausing, interpolation, and the
+number of fixed evaluations requested. A step exposes its current tick and
+exact integer-nanosecond duration to the policy; the tick advances once only
+after the complete motion and transform evaluation succeeds.
+
+The library guarantees deterministic ordering, not cross-platform bitwise
+floating-point identity. A consumer that requires bitwise replay must supply
+policies and numeric types with that property and must keep external intent
+ordering deterministic. Coordinate conventions, damping, constraints,
+stationary thresholds, and velocity reference frames are likewise policy
+decisions. Intent updates and evaluation require external synchronization.
+
 ## Example
 
 ```cpp

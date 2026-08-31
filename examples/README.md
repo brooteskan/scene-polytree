@@ -12,6 +12,8 @@ The example verifies three architectural properties:
 
 - controller code does not propagate transforms or traverse the hierarchy;
 - hull, turret, and gun motion uses the same centralized fixed-step evaluator;
+- equivalent player and AI intent remains transform-equivalent across repeated
+  fixed ticks, while turret yaw and gun pitch preserve their authored pivots;
 - writing stationary intent removes nodes from the active set, so a later tick
   performs no integration or composition callbacks.
 
