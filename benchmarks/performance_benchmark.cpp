@@ -1,4 +1,4 @@
-#include "tank_example.hpp"
+#include "benchmark_fixture.hpp"
 
 #include <scene_polytree/motion/motion.hpp>
 #include <scene_polytree/scene_polytree.hpp>
@@ -185,12 +185,12 @@ void operator delete[](void *pointer, std::align_val_t, const std::nothrow_t &) 
 }
 
 namespace {
-namespace tank = scene_polytree::examples::tank;
+namespace fixture = scene_polytree::benchmarks::fixture;
 using clock_type = std::chrono::steady_clock;
 using synthetic_authoring = scene_polytree::basic_authoring_scene<
-    std::uint32_t, std::uint32_t, tank::rigid_pose>;
+    std::uint32_t, std::uint32_t, fixture::rigid_pose>;
 using synthetic_runtime = scene_polytree::basic_runtime_scene<
-    std::uint32_t, std::uint32_t, tank::rigid_pose>;
+    std::uint32_t, std::uint32_t, fixture::rigid_pose>;
 
 struct options {
     bool smoke{};
@@ -374,7 +374,7 @@ void emit_measurement(const measurement &record) {
     return std::max<std::size_t>(1, static_cast<std::size_t>(std::llround(total * ratio)));
 }
 
-[[nodiscard]] tank::rigid_pose local_pose(std::size_t index) {
+[[nodiscard]] fixture::rigid_pose local_pose(std::size_t index) {
     const auto value = static_cast<double>(index % 97) * 0.001;
     return {{value, value * 0.5, value * 0.25}, {1.0, 0.0, 0.0, 0.0}};
 }
@@ -482,7 +482,7 @@ template <class Runtime> [[nodiscard]] std::size_t retained_bytes(const Runtime 
            runtime.identities().storage_bytes();
 }
 
-[[nodiscard]] double pose_checksum(const tank::rigid_pose &pose) noexcept {
+[[nodiscard]] double pose_checksum(const fixture::rigid_pose &pose) noexcept {
     return pose.translation.x + pose.translation.y * 3.0 + pose.translation.z * 7.0 +
            pose.rotation.w * 11.0 + pose.rotation.x * 13.0 + pose.rotation.y * 17.0 +
            pose.rotation.z * 19.0;
@@ -494,7 +494,7 @@ template <class Runtime> [[nodiscard]] double state_checksum(const Runtime &runt
         [](const auto &record) { return pose_checksum(record.world); });
 }
 
-template <class Runtime> void initialize_world(Runtime &runtime, tank::rigid_policy &policy) {
+template <class Runtime> void initialize_world(Runtime &runtime, fixture::rigid_policy &policy) {
     scene_polytree::transform_evaluation_workspace workspace;
     const auto plan = scene_polytree::make_transform_evaluation_plan(
         runtime.topology(), runtime.state(), workspace);
@@ -690,10 +690,10 @@ void run_topology_suite(const options &configuration) {
 
 template <class N, class E>
 void evaluate_kernel_topological(const wz::core::graph::Polytree<N, E> &topology,
-                                 const std::vector<tank::rigid_pose> &locals,
-                                 std::vector<tank::rigid_pose> &worlds,
+                                 const std::vector<fixture::rigid_pose> &locals,
+                                 std::vector<fixture::rigid_pose> &worlds,
                                  const std::vector<std::uint8_t> &affected,
-                                 tank::rigid_policy &policy) {
+                                 fixture::rigid_policy &policy) {
     std::ranges::for_each(wz::core::graph::evaluation_plan(topology).topological_order,
                           [&](wz::core::graph::NodeHandle node) {
                               if (affected[node] == 0) {
@@ -708,10 +708,10 @@ void evaluate_kernel_topological(const wz::core::graph::Polytree<N, E> &topology
 
 template <class N, class E>
 void evaluate_kernel_dependency_levels(const wz::core::graph::Polytree<N, E> &topology,
-                                       const std::vector<tank::rigid_pose> &locals,
-                                       std::vector<tank::rigid_pose> &worlds,
+                                       const std::vector<fixture::rigid_pose> &locals,
+                                       std::vector<fixture::rigid_pose> &worlds,
                                        const std::vector<std::uint8_t> &affected,
-                                       tank::rigid_policy &policy) {
+                                       fixture::rigid_policy &policy) {
     const auto plan = wz::core::graph::evaluation_plan(topology);
     std::ranges::for_each(std::views::iota(std::size_t{}, plan.level_count()),
                           [&](std::size_t level) {
@@ -742,7 +742,7 @@ void run_transform_case(std::string_view shape, std::size_t node_total, double d
                                   throw std::runtime_error("transform fixture freeze failed");
                               }
                               auto runtime = std::move(frozen).value();
-                              tank::rigid_policy policy;
+                              fixture::rigid_policy policy;
                               initialize_world(runtime, policy);
                               const auto directly_dirty =
                                   mark_dirty(runtime, dirty_ratio, root_pattern);
@@ -879,8 +879,8 @@ void run_transform_case(std::string_view shape, std::size_t node_total, double d
                                       warm_plan_timing.allocation_count == 0,
                               });
 
-                              std::vector<tank::rigid_pose> locals;
-                              std::vector<tank::rigid_pose> topological_worlds;
+                              std::vector<fixture::rigid_pose> locals;
+                              std::vector<fixture::rigid_pose> topological_worlds;
                               locals.reserve(runtime.state().size());
                               topological_worlds.reserve(runtime.state().size());
                               std::ranges::for_each(runtime.state().records(), [&](const auto &record) {
@@ -923,7 +923,7 @@ void run_transform_case(std::string_view shape, std::size_t node_total, double d
                                   1,
                                   topological_timing,
                                   retained_bytes(runtime) +
-                                      topological_worlds.capacity() * sizeof(tank::rigid_pose),
+                                      topological_worlds.capacity() * sizeof(fixture::rigid_pose),
                                   affected.capacity() * sizeof(std::uint8_t),
                                   kernel_checksum,
                                   kernel_match,
@@ -945,7 +945,7 @@ void run_transform_case(std::string_view shape, std::size_t node_total, double d
                                   1,
                                   dependency_timing,
                                   retained_bytes(runtime) +
-                                      dependency_worlds.capacity() * sizeof(tank::rigid_pose),
+                                      dependency_worlds.capacity() * sizeof(fixture::rigid_pose),
                                   affected.capacity() * sizeof(std::uint8_t),
                                   kernel_checksum,
                                   kernel_match,
@@ -1070,89 +1070,89 @@ void run_transform_suite(const options &configuration) {
     });
 }
 
-struct tank_fixture {
-    tank::authoring_scene authoring;
-    std::vector<tank::tank_instance> stable;
+struct articulated_fixture {
+    fixture::authoring_scene authoring;
+    std::vector<fixture::articulated_instance> stable;
 };
 
-[[nodiscard]] tank_fixture make_tanks(std::size_t actor_total) {
-    tank_fixture fixture;
+[[nodiscard]] articulated_fixture make_articulations(std::size_t actor_total) {
+    articulated_fixture fixture;
     fixture.stable.reserve(actor_total);
-    const tank::tank_asset asset;
+    const fixture::articulated_asset asset;
     std::ranges::for_each(std::views::iota(std::size_t{}, actor_total),
                           [&](std::size_t index) {
-                              fixture.stable.push_back(tank::instantiate_tank(
+                              fixture.stable.push_back(fixture::instantiate_articulation(
                                   fixture.authoring, asset,
                                   {{static_cast<double>(index) * 4.0, 0.0, 0.0}, {}}));
                           });
     return fixture;
 }
 
-struct runtime_tanks {
-    tank::runtime_scene runtime;
-    std::vector<tank::runtime_tank_instance> instances;
+struct runtime_articulations {
+    fixture::runtime_scene runtime;
+    std::vector<fixture::runtime_articulated_instance> instances;
 };
 
-[[nodiscard]] runtime_tanks freeze_tanks(tank_fixture &fixture) {
+[[nodiscard]] runtime_articulations freeze_articulations(articulated_fixture &fixture) {
     wz::core::graph::FreezeWorkspace workspace;
     auto frozen = scene_polytree::freeze_scene(fixture.authoring, workspace);
     if (!frozen) {
-        throw std::runtime_error("tank fixture freeze failed");
+        throw std::runtime_error("articulation fixture freeze failed");
     }
     auto runtime = std::move(frozen).value();
-    std::vector<tank::runtime_tank_instance> instances;
+    std::vector<fixture::runtime_articulated_instance> instances;
     instances.reserve(fixture.stable.size());
     std::ranges::transform(fixture.stable, std::back_inserter(instances),
-                           [&](tank::tank_instance instance) {
-                               return tank::resolve_tank(runtime, instance);
+                           [&](fixture::articulated_instance instance) {
+                               return fixture::resolve_articulation(runtime, instance);
                            });
     return {std::move(runtime), std::move(instances)};
 }
 
-void apply_actor_intent(tank::active_set &active,
-                        std::span<const tank::runtime_tank_instance> instances,
-                        std::size_t active_actors, const tank::tank_intent &intent,
-                        tank::rigid_policy &policy) {
+void apply_actor_intent(fixture::active_set &active,
+                        std::span<const fixture::runtime_articulated_instance> instances,
+                        std::size_t active_actors, const fixture::motion_command &intent,
+                        fixture::rigid_policy &policy) {
     std::ranges::for_each(instances.first(active_actors), [&](const auto &instance) {
-        if (tank::apply_intent(active, instance, intent, policy) !=
+        if (fixture::apply_command(active, instance, intent, policy) !=
             scene_polytree::motion::motion_error::none) {
-            throw std::runtime_error("tank intent update failed");
+            throw std::runtime_error("articulation command update failed");
         }
     });
 }
 
-void apply_actor_intent_order(tank::active_set &active,
-                              std::span<const tank::runtime_tank_instance> instances,
+void apply_actor_intent_order(fixture::active_set &active,
+                              std::span<const fixture::runtime_articulated_instance> instances,
                               std::span<const std::size_t> order,
-                              const tank::tank_intent &intent, tank::rigid_policy &policy) {
+                              const fixture::motion_command &intent, fixture::rigid_policy &policy) {
     std::ranges::for_each(order, [&](std::size_t index) {
-        if (tank::apply_intent(active, instances[index], intent, policy) !=
+        if (fixture::apply_command(active, instances[index], intent, policy) !=
             scene_polytree::motion::motion_error::none) {
-            throw std::runtime_error("ordered tank intent update failed");
+            throw std::runtime_error("ordered articulation command update failed");
         }
     });
 }
 
-[[nodiscard]] std::vector<tank::active_set::update_type>
-make_actor_intent_updates(std::span<const tank::runtime_tank_instance> instances,
+[[nodiscard]] std::vector<fixture::active_set::update_type>
+make_actor_intent_updates(std::span<const fixture::runtime_articulated_instance> instances,
                           std::span<const std::size_t> order,
-                          const tank::tank_intent &intent) {
-    std::vector<tank::active_set::update_type> updates;
+                          const fixture::motion_command &intent) {
+    std::vector<fixture::active_set::update_type> updates;
     updates.reserve(order.size() * 3);
     std::ranges::for_each(order, [&](std::size_t index) {
         const auto instance = instances[index];
-        updates.push_back({instance.hull,
+        updates.push_back({instance.root,
                            {{0.0, intent.forward_speed, 0.0},
-                            {0.0, 0.0, intent.hull_yaw_rate}}});
+                            {0.0, 0.0, intent.root_yaw_rate}}});
         updates.push_back(
-            {instance.turret, {{}, {0.0, 0.0, intent.turret_yaw_rate}}});
-        updates.push_back({instance.gun, {{}, {intent.gun_pitch_rate, 0.0, 0.0}}});
+            {instance.yaw, {{}, {0.0, 0.0, intent.yaw_rate}}});
+        updates.push_back({instance.pitch, {{}, {intent.pitch_rate, 0.0, 0.0}}});
     });
     return updates;
 }
 
-[[nodiscard]] bool active_sets_match(const tank::active_set &left,
-                                     const tank::active_set &right) {
+[[nodiscard]] bool active_sets_match(const fixture::active_set &left,
+                                     const fixture::active_set &right) {
     if (left.size() != right.size()) {
         return false;
     }
@@ -1170,19 +1170,19 @@ void run_motion_case(std::size_t actor_total, double active_ratio,
                      const options &configuration) {
     std::ranges::for_each(std::views::iota(std::size_t{}, configuration.samples),
                           [&](std::size_t sample) {
-                              auto fixture = make_tanks(actor_total);
-                              auto frozen = freeze_tanks(fixture);
-                              tank::rigid_policy policy;
+                              auto fixture = make_articulations(actor_total);
+                              auto frozen = freeze_articulations(fixture);
+                              fixture::rigid_policy policy;
                               initialize_world(frozen.runtime, policy);
                               const auto active_actors = ratio_count(actor_total, active_ratio);
-                              tank::active_set active{frozen.runtime.topology()};
-                              tank::active_set reverse_active{frozen.runtime.topology()};
-                              tank::active_set shuffled_active{frozen.runtime.topology()};
-                              tank::active_set batch_active{frozen.runtime.topology()};
+                              fixture::active_set active{frozen.runtime.topology()};
+                              fixture::active_set reverse_active{frozen.runtime.topology()};
+                              fixture::active_set shuffled_active{frozen.runtime.topology()};
+                              fixture::active_set batch_active{frozen.runtime.topology()};
                               scene_polytree::motion::active_motion_update_workspace<
-                                  tank::vector3, tank::vector3>
+                                  fixture::vector3, fixture::vector3>
                                   batch_workspace;
-                              const tank::tank_intent moving{2.0, 0.25, -0.5, 0.125};
+                              const fixture::motion_command moving{2.0, 0.25, -0.5, 0.125};
                               const auto topology = describe_topology(frozen.runtime.topology());
                               std::vector<std::size_t> ascending_order(active_actors);
                               std::iota(ascending_order.begin(), ascending_order.end(), 0);
@@ -1205,7 +1205,7 @@ void run_motion_case(std::size_t actor_total, double active_ratio,
                               emit_measurement({
                                   "motion",
                                   "active_set_activate",
-                                  "articulated_tank_forest",
+                                  "three_node_articulation_forest",
                                   "input_actor_order_ascending",
                                   topology,
                                   actor_total,
@@ -1231,7 +1231,7 @@ void run_motion_case(std::size_t actor_total, double active_ratio,
                               emit_measurement({
                                   "motion",
                                   "active_set_activate_reverse",
-                                  "articulated_tank_forest",
+                                  "three_node_articulation_forest",
                                   "input_actor_order_descending",
                                   topology,
                                   actor_total,
@@ -1258,7 +1258,7 @@ void run_motion_case(std::size_t actor_total, double active_ratio,
                               emit_measurement({
                                   "motion",
                                   "active_set_activate_shuffled",
-                                  "articulated_tank_forest",
+                                  "three_node_articulation_forest",
                                   "input_actor_order_seeded_shuffle",
                                   topology,
                                   actor_total,
@@ -1283,13 +1283,13 @@ void run_motion_case(std::size_t actor_total, double active_ratio,
                                                                  batch_workspace) !=
                                       scene_polytree::motion::motion_error::none) {
                                       throw std::runtime_error(
-                                          "batched tank intent update failed");
+                                          "batched articulation command update failed");
                                   }
                               });
                               emit_measurement({
                                   "motion",
                                   "active_set_activate_batch",
-                                  "articulated_tank_forest",
+                                  "three_node_articulation_forest",
                                   "validated_sort_coalesce_merge",
                                   topology,
                                   actor_total,
@@ -1323,7 +1323,7 @@ void run_motion_case(std::size_t actor_total, double active_ratio,
                               emit_measurement({
                                   "motion",
                                   "active_set_churn_10_percent",
-                                  "articulated_tank_forest",
+                                  "three_node_articulation_forest",
                                   "input_actor_order_seeded_shuffle",
                                   topology,
                                   actor_total,
@@ -1343,7 +1343,7 @@ void run_motion_case(std::size_t actor_total, double active_ratio,
                                   shuffled_active.size() == active_actors * 3,
                               });
 
-                              const tank::tank_intent changed{3.0, -0.5, 0.75, -0.25};
+                              const fixture::motion_command changed{3.0, -0.5, 0.75, -0.25};
                               const auto changed_batch_updates = make_actor_intent_updates(
                                   frozen.instances, shuffled_order, changed);
                               const auto update_timing = measure([&] {
@@ -1353,7 +1353,7 @@ void run_motion_case(std::size_t actor_total, double active_ratio,
                               emit_measurement({
                                   "motion",
                                   "active_set_update",
-                                  "articulated_tank_forest",
+                                  "three_node_articulation_forest",
                                   "node_handle_order",
                                   topology,
                                   actor_total,
@@ -1377,13 +1377,13 @@ void run_motion_case(std::size_t actor_total, double active_ratio,
                                                                  batch_workspace) !=
                                       scene_polytree::motion::motion_error::none) {
                                       throw std::runtime_error(
-                                          "batched tank motion update failed");
+                                          "batched articulation motion update failed");
                                   }
                               });
                               emit_measurement({
                                   "motion",
                                   "active_set_update_batch_warm",
-                                  "articulated_tank_forest",
+                                  "three_node_articulation_forest",
                                   "validated_sort_coalesce_merge",
                                   topology,
                                   actor_total,
@@ -1406,7 +1406,7 @@ void run_motion_case(std::size_t actor_total, double active_ratio,
 
                               scene_polytree::motion::fixed_step_sequence sequence{
                                   std::chrono::nanoseconds{16'666'667}};
-                              scene_polytree::motion::motion_evaluation_workspace<tank::rigid_pose>
+                              scene_polytree::motion::motion_evaluation_workspace<fixture::rigid_pose>
                                   motion_workspace;
                               scene_polytree::transform_evaluation_workspace transform_workspace;
                               scene_polytree::motion::motion_evaluation_result result;
@@ -1425,7 +1425,7 @@ void run_motion_case(std::size_t actor_total, double active_ratio,
                               emit_measurement({
                                   "motion",
                                   "advance_motion_scene_cold",
-                                  "articulated_tank_forest",
+                                  "three_node_articulation_forest",
                                   "node_handle_order_then_topological",
                                   topology,
                                   actor_total,
@@ -1460,7 +1460,7 @@ void run_motion_case(std::size_t actor_total, double active_ratio,
                               emit_measurement({
                                   "motion",
                                   "advance_motion_scene_warm",
-                                  "articulated_tank_forest",
+                                  "three_node_articulation_forest",
                                   "node_handle_order_then_topological",
                                   topology,
                                   actor_total,
@@ -1488,7 +1488,7 @@ void run_motion_case(std::size_t actor_total, double active_ratio,
                               emit_measurement({
                                   "motion",
                                   "active_set_deactivate",
-                                  "articulated_tank_forest",
+                                  "three_node_articulation_forest",
                                   "node_handle_order",
                                   topology,
                                   actor_total,
@@ -1514,7 +1514,7 @@ void run_motion_case(std::size_t actor_total, double active_ratio,
                               emit_measurement({
                                   "motion",
                                   "active_set_deactivate_reverse",
-                                  "articulated_tank_forest",
+                                  "three_node_articulation_forest",
                                   "input_actor_order_descending",
                                   topology,
                                   actor_total,
@@ -1539,13 +1539,13 @@ void run_motion_case(std::size_t actor_total, double active_ratio,
                                                                  batch_workspace) !=
                                       scene_polytree::motion::motion_error::none) {
                                       throw std::runtime_error(
-                                          "batched tank deactivation failed");
+                                          "batched articulation deactivation failed");
                                   }
                               });
                               emit_measurement({
                                   "motion",
                                   "active_set_deactivate_batch",
-                                  "articulated_tank_forest",
+                                  "three_node_articulation_forest",
                                   "validated_sort_coalesce_merge",
                                   topology,
                                   actor_total,
@@ -1575,10 +1575,10 @@ void run_motion_suite(const options &configuration) {
     });
 }
 
-void write_changed(const tank::runtime_scene &runtime,
+void write_changed(const fixture::runtime_scene &runtime,
                    std::span<const wz::core::graph::NodeHandle> changed,
-                   std::vector<tank::rigid_pose> &targets, tank::rigid_policy &policy) {
-    const tank::rigid_pose offset{{0.1, 0.2, 0.3}, {}};
+                   std::vector<fixture::rigid_pose> &targets, fixture::rigid_policy &policy) {
+    const fixture::rigid_pose offset{{0.1, 0.2, 0.3}, {}};
     std::ranges::for_each(changed, [&](wz::core::graph::NodeHandle node) {
         targets[node] = policy.compose(runtime.state().world(node), offset);
     });
@@ -1588,9 +1588,9 @@ void run_synchronization_case(std::size_t actor_total, double changed_request,
                               const options &configuration) {
     std::ranges::for_each(std::views::iota(std::size_t{}, configuration.samples),
                           [&](std::size_t sample) {
-                              auto fixture = make_tanks(actor_total);
-                              auto frozen = freeze_tanks(fixture);
-                              tank::rigid_policy policy;
+                              auto fixture = make_articulations(actor_total);
+                              auto frozen = freeze_articulations(fixture);
+                              fixture::rigid_policy policy;
                               initialize_world(frozen.runtime, policy);
                               const auto token = frozen.runtime.state().revision();
                               const auto directly_dirty = mark_dirty(frozen.runtime, changed_request);
@@ -1623,7 +1623,7 @@ void run_synchronization_case(std::size_t actor_total, double changed_request,
                               emit_measurement({
                                   "synchronization",
                                   "changed_node_selection",
-                                  "articulated_tank_forest",
+                                  "three_node_articulation_forest",
                                   "topological_filter",
                                   topology,
                                   actor_total,
@@ -1643,7 +1643,7 @@ void run_synchronization_case(std::size_t actor_total, double changed_request,
                                   selected_correctly,
                               });
 
-                              std::vector<tank::rigid_pose> targets(topology.node_count);
+                              std::vector<fixture::rigid_pose> targets(topology.node_count);
                               const auto write_timing = measure([&] {
                                   write_changed(frozen.runtime, changed, targets, policy);
                               });
@@ -1652,7 +1652,7 @@ void run_synchronization_case(std::size_t actor_total, double changed_request,
                               emit_measurement({
                                   "synchronization",
                                   "target_write",
-                                  "articulated_tank_forest",
+                                  "three_node_articulation_forest",
                                   "changed_node_order",
                                   topology,
                                   actor_total,
@@ -1666,7 +1666,7 @@ void run_synchronization_case(std::size_t actor_total, double changed_request,
                                   1,
                                   write_timing,
                                   retained_bytes(frozen.runtime) +
-                                      targets.capacity() * sizeof(tank::rigid_pose),
+                                      targets.capacity() * sizeof(fixture::rigid_pose),
                                   changed_scratch.capacity() *
                                       sizeof(wz::core::graph::NodeHandle),
                                   target_checksum,
@@ -1683,7 +1683,7 @@ void run_synchronization_case(std::size_t actor_total, double changed_request,
                               emit_measurement({
                                   "synchronization",
                                   "select_and_write",
-                                  "articulated_tank_forest",
+                                  "three_node_articulation_forest",
                                   "topological_filter_then_write",
                                   topology,
                                   actor_total,
@@ -1697,7 +1697,7 @@ void run_synchronization_case(std::size_t actor_total, double changed_request,
                                   1,
                                   combined_timing,
                                   retained_bytes(frozen.runtime) +
-                                      targets.capacity() * sizeof(tank::rigid_pose),
+                                      targets.capacity() * sizeof(fixture::rigid_pose),
                                   changed_scratch.capacity() *
                                       sizeof(wz::core::graph::NodeHandle),
                                   target_checksum,
@@ -1712,7 +1712,7 @@ void run_synchronization_case(std::size_t actor_total, double changed_request,
                               emit_measurement({
                                   "synchronization",
                                   "direct_evaluated_batch_write",
-                                  "articulated_tank_forest",
+                                  "three_node_articulation_forest",
                                   "evaluated_topological_batch",
                                   topology,
                                   actor_total,
@@ -1726,7 +1726,7 @@ void run_synchronization_case(std::size_t actor_total, double changed_request,
                                   1,
                                   direct_timing,
                                   retained_bytes(frozen.runtime) +
-                                      targets.capacity() * sizeof(tank::rigid_pose),
+                                      targets.capacity() * sizeof(fixture::rigid_pose),
                                   0,
                                   target_checksum,
                                   selected_correctly,

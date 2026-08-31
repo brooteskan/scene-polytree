@@ -99,8 +99,6 @@ deterministic handle order; stationary state is removed from the active set.
 Each successful tick integrates active local transforms and delegates all
 descendant propagation to the core dirty planner.
 
-The private headless tank example instantiates the same hull/turret/gun asset
-for player and AI control. It is an integration fixture, not installed API.
 See [the motion contract](docs/motion.md) and
 [storage benchmark results](docs/motion-storage-results.md).
 

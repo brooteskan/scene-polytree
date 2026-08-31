@@ -1,13 +1,10 @@
 #include "ScenePolytreeSystemComponent.h"
 
-#include <AzCore/Component/ComponentApplicationBus.h>
-#include <AzCore/Component/Entity.h>
 #include <AzCore/Component/TransformBus.h>
 #include <AzCore/Interface/Interface.h>
 #include <AzCore/Serialization/SerializeContext.h>
 
 #include <algorithm>
-#include <array>
 #include <chrono>
 #include <ranges>
 #include <utility>
@@ -62,18 +59,6 @@ ScenePolytreeSystemComponent::CreateScene(const ScenePolytreeSceneDescriptor &de
     const SceneHandle handle{m_nextSceneId++};
     m_scenes.emplace(handle.m_value, SceneEntry{});
     Enqueue(CreateCommand{handle, descriptor});
-    return handle;
-}
-
-SceneHandle ScenePolytreeSystemComponent::CreateTankScene(const TankSceneDescriptor &descriptor) {
-    AZStd::scoped_lock lock(m_mutex);
-    if (descriptor.m_spawnTransforms.empty() || descriptor.m_fixedStepNanoseconds <= 0 ||
-        descriptor.m_maxCatchUpSteps == 0) {
-        return {};
-    }
-    const SceneHandle handle{m_nextSceneId++};
-    m_scenes.emplace(handle.m_value, SceneEntry{});
-    Enqueue(CreateTankCommand{handle, descriptor});
     return handle;
 }
 
@@ -158,40 +143,6 @@ NodeResult ScenePolytreeSystemComponent::ResolveNode(SlotHandle slot,
                             : NodeResult{ScenePolytreeResultCode::SceneNotReady, {}};
 }
 
-TankHandle ScenePolytreeSystemComponent::ResolveTank(SlotHandle slot) const {
-    AZStd::scoped_lock lock(m_mutex);
-    const Internal::SceneInstance *scene = FindScene(slot.m_spawner.m_scene);
-    return scene != nullptr ? scene->ResolveTank(slot) : TankHandle{};
-}
-
-bool ScenePolytreeSystemComponent::BindTankEntities(TankHandle tank,
-                                                    const TankEntityBindings &bindings) {
-    AZStd::scoped_lock lock(m_mutex);
-    if (!AcceptsCommands(tank.m_scene) || !bindings.IsComplete()) {
-        return false;
-    }
-    Enqueue(BindCommand{tank, bindings});
-    return true;
-}
-
-bool ScenePolytreeSystemComponent::RemoveTankEntities(TankHandle tank) {
-    AZStd::scoped_lock lock(m_mutex);
-    if (!AcceptsCommands(tank.m_scene)) {
-        return false;
-    }
-    Enqueue(UnbindCommand{tank});
-    return true;
-}
-
-bool ScenePolytreeSystemComponent::MarkTankReady(TankHandle tank) {
-    AZStd::scoped_lock lock(m_mutex);
-    if (!AcceptsCommands(tank.m_scene)) {
-        return false;
-    }
-    Enqueue(ReadyCommand{tank});
-    return true;
-}
-
 bool ScenePolytreeSystemComponent::SetSceneActive(SceneHandle handle, bool active) {
     AZStd::scoped_lock lock(m_mutex);
     if (!AcceptsCommands(handle)) {
@@ -201,18 +152,10 @@ bool ScenePolytreeSystemComponent::SetSceneActive(SceneHandle handle, bool activ
     return true;
 }
 
-bool ScenePolytreeSystemComponent::SubmitTankIntent(TankHandle tank, const TankIntent &intent) {
-    AZStd::scoped_lock lock(m_mutex);
-    if (!AcceptsCommands(tank.m_scene)) {
-        return false;
-    }
-    Enqueue(IntentCommand{tank, intent});
-    return true;
-}
-
 bool ScenePolytreeSystemComponent::RequestCorrection(const SceneCorrection &correction) {
     AZStd::scoped_lock lock(m_mutex);
-    if (!AcceptsCommands(correction.m_tank.m_scene)) {
+    if (!AcceptsCommands(correction.m_node.m_slot.m_spawner.m_scene) ||
+        !correction.m_node.IsValid() || !correction.m_transform.IsFinite()) {
         return false;
     }
     Enqueue(CorrectionCommand{correction});
@@ -437,20 +380,6 @@ void ScenePolytreeSystemComponent::Process(const CreateCommand &command) {
     }
 }
 
-void ScenePolytreeSystemComponent::Process(const CreateTankCommand &command) {
-    const auto found = m_scenes.find(command.m_scene.m_value);
-    if (found == m_scenes.end() || found->second.m_life != SceneLife::Pending) {
-        return;
-    }
-    found->second.m_instance = Internal::SceneInstance::Create(command.m_descriptor);
-    if (found->second.m_instance) {
-        found->second.m_life = SceneLife::Alive;
-    } else {
-        AZ_Error("ScenePolytree", false, "Failed to create a queued tank scene.");
-        m_scenes.erase(found);
-    }
-}
-
 void ScenePolytreeSystemComponent::Process(const DestroyCommand &command) {
     m_scenes.erase(command.m_scene.m_value);
 }
@@ -487,92 +416,19 @@ void ScenePolytreeSystemComponent::Process(const ReleaseSlotCommand &command) {
     }
 }
 
-void ScenePolytreeSystemComponent::Process(const BindCommand &command) {
-    Internal::SceneInstance *scene = FindScene(command.m_tank.m_scene);
-    if (scene == nullptr) {
-        return;
-    }
-    auto *application = AZ::Interface<AZ::ComponentApplicationRequests>::Get();
-    const std::array entityIds{
-        command.m_bindings.m_hull,        command.m_bindings.m_turret,   command.m_bindings.m_gun,
-        command.m_bindings.m_turretPivot, command.m_bindings.m_gunPivot,
-    };
-    std::array<AZ::Transform, 5> worldTransforms;
-    worldTransforms.fill(AZ::Transform::CreateIdentity());
-    bool valid = application != nullptr && command.m_bindings.IsComplete();
-    const auto indices = std::views::iota(std::size_t{}, entityIds.size());
-    valid = valid && std::ranges::all_of(indices, [&](std::size_t left) {
-                const auto later = std::views::iota(left + 1, entityIds.size());
-                return std::ranges::all_of(
-                    later, [&](std::size_t right) { return entityIds[left] != entityIds[right]; });
-            });
-    std::ranges::for_each(indices, [&](std::size_t index) {
-        AZ::Entity *entity = valid ? application->FindEntity(entityIds[index]) : nullptr;
-        auto *transform = valid ? AZ::TransformBus::FindFirstHandler(entityIds[index]) : nullptr;
-        const bool targetValid = entity != nullptr &&
-                                 entity->GetState() == AZ::Entity::State::Active &&
-                                 transform != nullptr && !transform->GetParentId().IsValid();
-        valid = valid && targetValid;
-        if (targetValid) {
-            worldTransforms[index] = transform->GetWorldTM();
-            valid = valid && worldTransforms[index].IsFinite() &&
-                    worldTransforms[index].GetUniformScale() >= AZ::MinTransformScale;
-        }
-    });
-    const std::array targetWorldTransforms{
-        worldTransforms[0],
-        worldTransforms[1],
-        worldTransforms[2],
-    };
-    const std::array pivotWorldTransforms{
-        worldTransforms[3],
-        worldTransforms[4],
-    };
-    const bool pivotsAreRigid = valid &&
-                                AZ::IsClose(pivotWorldTransforms[0].GetUniformScale(), 1.0f) &&
-                                AZ::IsClose(pivotWorldTransforms[1].GetUniformScale(), 1.0f);
-    const bool bound =
-        pivotsAreRigid && scene->BindProjected(command.m_tank.m_index, command.m_bindings,
-                                               targetWorldTransforms, pivotWorldTransforms);
-    AZ_Error("ScenePolytree", bound,
-             "Rejected missing, duplicate, inactive, parented, or non-rigid tank projection "
-             "and pivot bindings.");
-}
-
-void ScenePolytreeSystemComponent::Process(const UnbindCommand &command) {
-    if (Internal::SceneInstance *scene = FindScene(command.m_tank.m_scene)) {
-        (void)scene->Unbind(command.m_tank.m_index);
-    }
-}
-
-void ScenePolytreeSystemComponent::Process(const ReadyCommand &command) {
-    if (Internal::SceneInstance *scene = FindScene(command.m_tank.m_scene)) {
-        const bool ready = scene->MarkReady(command.m_tank.m_index);
-        AZ_Error("ScenePolytree", ready, "Rejected an invalid tank readiness command.");
-    }
-}
-
 void ScenePolytreeSystemComponent::Process(const ActiveCommand &command) {
     if (Internal::SceneInstance *scene = FindScene(command.m_scene)) {
         (void)scene->SetActive(command.m_active);
     }
 }
 
-void ScenePolytreeSystemComponent::Process(const IntentCommand &command) {
-    if (Internal::SceneInstance *scene = FindScene(command.m_tank.m_scene)) {
-        const bool accepted = scene->SubmitIntent(command.m_tank.m_index, command.m_intent);
-        AZ_Error("ScenePolytree", accepted, "Rejected an invalid tank intent command.");
-    }
-}
-
 void ScenePolytreeSystemComponent::Process(const CorrectionCommand &command) {
-    if (Internal::SceneInstance *scene = FindScene(command.m_correction.m_tank.m_scene)) {
+    if (Internal::SceneInstance *scene =
+            FindScene(command.m_correction.m_node.m_slot.m_spawner.m_scene)) {
         const bool accepted =
             command.m_correction.m_space == SceneCorrectionSpace::Local
-                ? scene->CorrectLocal(command.m_correction.m_tank.m_index,
-                                      command.m_correction.m_role, command.m_correction.m_transform)
-                : scene->CorrectWorld(command.m_correction.m_tank.m_index,
-                                      command.m_correction.m_role,
+                ? scene->CorrectLocal(command.m_correction.m_node, command.m_correction.m_transform)
+                : scene->CorrectWorld(command.m_correction.m_node,
                                       command.m_correction.m_transform);
         AZ_Error("ScenePolytree", accepted, "Rejected an invalid scene correction command.");
     }

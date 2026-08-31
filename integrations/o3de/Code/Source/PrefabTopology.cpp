@@ -1,7 +1,6 @@
 #include "PrefabTopology.h"
 
 #include <ScenePolytree/ScenePolytreePrefabNodeComponent.h>
-#include <ScenePolytree/Tank/TankNodeBindingComponent.h>
 
 #include <AzFramework/Components/TransformComponent.h>
 
@@ -11,21 +10,6 @@
 
 namespace ScenePolytree::Internal {
 namespace {
-[[nodiscard]] ScenePolytreeNodeDescriptor MakeTankNode(TankNodeRole role) {
-    switch (role) {
-    case TankNodeRole::Hull:
-        return {AZ::Name("Hull"), AZ::Name(), ScenePolytreeNodeType::Transform,
-                ScenePolytreeJointType::None, AZ::Transform::CreateIdentity()};
-    case TankNodeRole::Turret:
-        return {AZ::Name("Turret"), AZ::Name("Hull"), ScenePolytreeNodeType::Transform,
-                ScenePolytreeJointType::Yaw, AZ::Transform::CreateIdentity()};
-    case TankNodeRole::Gun:
-        return {AZ::Name("Gun"), AZ::Name("Turret"), ScenePolytreeNodeType::Transform,
-                ScenePolytreeJointType::Pitch, AZ::Transform::CreateIdentity()};
-    }
-    return {};
-}
-
 [[nodiscard]] bool NameLess(const AZ::Name &left, const AZ::Name &right) {
     return left.GetStringView() < right.GetStringView();
 }
@@ -164,14 +148,6 @@ PrefabTopologyResult ExtractPrefabTopology(AzFramework::Spawnable &spawnable) {
         return {{}, {ScenePolytreeResultCode::InvalidTransform, {}, {}, missingTransformNode}};
     }
 
-    if (nodes.empty()) {
-        std::ranges::for_each(
-            spawnable.GetEntities(), [&](const AZStd::unique_ptr<AZ::Entity> &entity) {
-                if (const auto *binding = entity->FindComponent<TankNodeBindingComponent>()) {
-                    nodes.push_back(MakeTankNode(binding->GetRole()));
-                }
-            });
-    }
     return ValidateAndNormalizeTopology(AZStd::move(nodes));
 }
 } // namespace ScenePolytree::Internal

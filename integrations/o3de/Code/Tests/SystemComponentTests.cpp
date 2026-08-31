@@ -6,12 +6,6 @@
 
 namespace ScenePolytree::Tests {
 namespace {
-[[nodiscard]] TankSceneDescriptor MakeSystemDescriptor() {
-    TankSceneDescriptor descriptor;
-    descriptor.m_spawnTransforms.assign(4, AZ::Transform::CreateIdentity());
-    return descriptor;
-}
-
 [[nodiscard]] ScenePolytreeSceneDescriptor MakeSharedSystemDescriptor() {
     ScenePolytreeSceneDescriptor descriptor;
     descriptor.m_partitions = {{5,
@@ -183,19 +177,19 @@ TEST(ScenePolytreeSystemComponentTests, SharedSceneBecomesReadyOnTickAndOwnsPart
 
 TEST(ScenePolytreeSystemComponentTests, MutationsAreQueuedUntilTheSystemTick) {
     ScenePolytreeSystemComponent system;
-    const SceneHandle scene = system.CreateTankScene(MakeSystemDescriptor());
+    const SceneHandle scene = system.CreateScene(MakeSharedSystemDescriptor());
     ASSERT_TRUE(scene.IsValid());
     EXPECT_TRUE(system.IsSceneAlive(scene));
-    EXPECT_EQ(system.GetSceneStatistics(scene).m_tankCount, 0);
+    EXPECT_EQ(system.GetSceneStatistics(scene).m_nodeCount, 0);
 
     system.OnTick(0.0f, AZ::ScriptTimePoint{});
-    EXPECT_EQ(system.GetSceneStatistics(scene).m_tankCount, 4);
+    EXPECT_EQ(system.GetSceneStatistics(scene).m_nodeCount, 2);
 
     system.DestroyScene(scene);
     EXPECT_FALSE(system.IsSceneAlive(scene));
-    EXPECT_FALSE(system.SubmitTankIntent(TankHandle{scene, 0}, TankIntent{}));
+    EXPECT_FALSE(system.SetSceneActive(scene, true));
     system.OnTick(0.0f, AZ::ScriptTimePoint{});
-    EXPECT_EQ(system.GetSceneStatistics(scene).m_tankCount, 0);
+    EXPECT_EQ(system.GetSceneStatistics(scene).m_nodeCount, 0);
 }
 
 TEST(ScenePolytreeSystemComponentTests, UsesTheDocumentedCentralTickOrder) {

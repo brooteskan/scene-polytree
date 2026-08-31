@@ -35,7 +35,6 @@ class ScenePolytreeSystemComponent final
     void Deactivate() override;
 
     SceneHandle CreateScene(const ScenePolytreeSceneDescriptor &descriptor) override;
-    SceneHandle CreateTankScene(const TankSceneDescriptor &descriptor) override;
     void DestroyScene(SceneHandle scene) override;
     SlotResult ReserveSlot(SpawnerHandle spawner) override;
     ScenePolytreeResultCode PlaceSlot(SlotHandle slot, const AZ::Transform &rootWorld) override;
@@ -45,12 +44,7 @@ class ScenePolytreeSystemComponent final
     ScenePolytreeResultCode ResetSlot(SlotHandle slot) override;
     ScenePolytreeResultCode ReleaseSlot(SlotHandle slot) override;
     NodeResult ResolveNode(SlotHandle slot, const AZ::Name &bindingId) const override;
-    TankHandle ResolveTank(SlotHandle slot) const override;
-    bool BindTankEntities(TankHandle tank, const TankEntityBindings &bindings) override;
-    bool RemoveTankEntities(TankHandle tank) override;
-    bool MarkTankReady(TankHandle tank) override;
     bool SetSceneActive(SceneHandle scene, bool active) override;
-    bool SubmitTankIntent(TankHandle tank, const TankIntent &intent) override;
     bool RequestCorrection(const SceneCorrection &correction) override;
     SceneStatistics GetSceneStatistics(SceneHandle scene) const override;
     bool IsSceneAlive(SceneHandle scene) const override;
@@ -76,19 +70,8 @@ class ScenePolytreeSystemComponent final
         SceneHandle m_scene;
         ScenePolytreeSceneDescriptor m_descriptor;
     };
-    struct CreateTankCommand {
-        SceneHandle m_scene;
-        TankSceneDescriptor m_descriptor;
-    };
     struct DestroyCommand {
         SceneHandle m_scene;
-    };
-    struct BindCommand {
-        TankHandle m_tank;
-        TankEntityBindings m_bindings;
-    };
-    struct UnbindCommand {
-        TankHandle m_tank;
     };
     struct PlaceSlotCommand {
         SlotHandle m_slot;
@@ -107,24 +90,16 @@ class ScenePolytreeSystemComponent final
     struct ReleaseSlotCommand {
         SlotHandle m_slot;
     };
-    struct ReadyCommand {
-        TankHandle m_tank;
-    };
     struct ActiveCommand {
         SceneHandle m_scene;
         bool m_active{};
     };
-    struct IntentCommand {
-        TankHandle m_tank;
-        TankIntent m_intent;
-    };
     struct CorrectionCommand {
         SceneCorrection m_correction;
     };
-    using Command = std::variant<CreateCommand, CreateTankCommand, DestroyCommand, PlaceSlotCommand,
-                                 BindSlotCommand, UnbindSlotCommand, ResetSlotCommand,
-                                 ReleaseSlotCommand, BindCommand, UnbindCommand, ReadyCommand,
-                                 ActiveCommand, IntentCommand, CorrectionCommand>;
+    using Command = std::variant<CreateCommand, DestroyCommand, PlaceSlotCommand, BindSlotCommand,
+                                 UnbindSlotCommand, ResetSlotCommand, ReleaseSlotCommand,
+                                 ActiveCommand, CorrectionCommand>;
 
     enum class SceneLife : AZ::u8 { Pending, Alive, Destroying };
     struct SceneEntry {
@@ -150,18 +125,13 @@ class ScenePolytreeSystemComponent final
     void Enqueue(Command command);
     void DrainCommands();
     void Process(const CreateCommand &command);
-    void Process(const CreateTankCommand &command);
     void Process(const DestroyCommand &command);
     void Process(const PlaceSlotCommand &command);
     void Process(const BindSlotCommand &command);
     void Process(const UnbindSlotCommand &command);
     void Process(const ResetSlotCommand &command);
     void Process(const ReleaseSlotCommand &command);
-    void Process(const BindCommand &command);
-    void Process(const UnbindCommand &command);
-    void Process(const ReadyCommand &command);
     void Process(const ActiveCommand &command);
-    void Process(const IntentCommand &command);
     void Process(const CorrectionCommand &command);
     void RefreshTickConnection();
 

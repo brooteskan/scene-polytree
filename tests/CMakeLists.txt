@@ -36,15 +36,6 @@ target_link_libraries(
 
 add_test(NAME scene_polytree.motion COMMAND scene_polytree_motion_tests)
 
-add_executable(scene_polytree_tank_example_tests tank_example_tests.cpp)
-target_link_libraries(
-    scene_polytree_tank_example_tests
-    PRIVATE
-        scene_polytree_tank_example_support
-)
-
-add_test(NAME scene_polytree.tank_example COMMAND scene_polytree_tank_example_tests)
-
 find_package(Python3 COMPONENTS Interpreter)
 if(Python3_Interpreter_FOUND)
     add_test(

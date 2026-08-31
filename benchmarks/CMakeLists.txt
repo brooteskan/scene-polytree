@@ -40,6 +40,7 @@ endif()
 
 add_executable(
     scene_polytree_performance_benchmark
+    benchmark_fixture.cpp
     performance_benchmark.cpp
 )
 target_link_libraries(
@@ -47,7 +48,6 @@ target_link_libraries(
     PRIVATE
         scene-polytree::motion
         scene-polytree::cpu-executor
-        scene_polytree_tank_example_support
 )
 target_compile_definitions(
     scene_polytree_performance_benchmark

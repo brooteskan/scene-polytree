@@ -136,6 +136,6 @@ const auto result = scene_polytree::motion::advance_motion_scene(
     transform_workspace, motion, transforms);
 ```
 
-The private articulated-tank fixture supplies a fuller engine-neutral example.
-Its hull, turret pivot, and gun pivot all use this API, and equivalent player
-and AI intent are checked against the same scene representation.
+The benchmark runner exercises this API with a generic three-node articulation
+fixture. Its root, yaw pivot, and pitch pivot share one active set and one
+centralized fixed-step evaluation path.

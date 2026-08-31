@@ -3,7 +3,6 @@ o3de_gem_setup("ScenePolytree")
 # O3DE is the integration host and opts into the otherwise engine-neutral repository.
 if(NOT TARGET scene-polytree::motion)
     set(SCENE_POLYTREE_BUILD_TESTS OFF CACHE BOOL "" FORCE)
-    set(SCENE_POLYTREE_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
     set(SCENE_POLYTREE_BUILD_BENCHMARKS OFF CACHE BOOL "" FORCE)
     add_subdirectory(
         "${CMAKE_CURRENT_SOURCE_DIR}/../.."

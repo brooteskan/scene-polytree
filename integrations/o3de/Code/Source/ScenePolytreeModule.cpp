@@ -7,11 +7,6 @@ ScenePolytreeModule::ScenePolytreeModule() {
                              ScenePolytreeSystemComponent::CreateDescriptor(),
                              ScenePolytreeComponent::CreateDescriptor(),
                              ScenePolytreePrefabNodeComponent::CreateDescriptor(),
-                             PlayerTankIntentAdapterComponent::CreateDescriptor(),
-                             AiTankIntentAdapterComponent::CreateDescriptor(),
-                             ScenePolytreeTankSpawnerComponent::CreateDescriptor(),
-                             TankArticulationBindingComponent::CreateDescriptor(),
-                             TankNodeBindingComponent::CreateDescriptor(),
                          });
 }
 

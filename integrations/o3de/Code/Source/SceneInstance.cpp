@@ -4,39 +4,11 @@
 #include <AzCore/Debug/Trace.h>
 
 #include <algorithm>
-#include <array>
 #include <optional>
 #include <ranges>
 
 namespace ScenePolytree::Internal {
 namespace {
-[[nodiscard]] StableTankInstance InstantiateTank(SceneInstance::AuthoringScene &scene,
-                                                 const AZ::Transform &spawnTransform) {
-    const auto hull =
-        scene.insert_root(ScenePolytreeNodeType::Transform, AzTransformValue(spawnTransform))
-            .value();
-    const auto turret =
-        scene
-            .insert_child(hull, ScenePolytreeNodeType::Transform, ScenePolytreeJointType::Yaw,
-                          AzTransformValue(AZ::Transform::CreateIdentity()))
-            .value();
-    const auto gun =
-        scene
-            .insert_child(turret, ScenePolytreeNodeType::Transform, ScenePolytreeJointType::Pitch,
-                          AzTransformValue(AZ::Transform::CreateIdentity()))
-            .value();
-    return {hull, turret, gun};
-}
-
-[[nodiscard]] RuntimeTankInstance ResolveLegacyTank(const SceneInstance::RuntimeScene &runtime,
-                                                    const StableTankInstance &stable) {
-    return {
-        runtime.identities().runtime_handle(stable.m_hull).value(),
-        runtime.identities().runtime_handle(stable.m_turret).value(),
-        runtime.identities().runtime_handle(stable.m_gun).value(),
-    };
-}
-
 [[nodiscard]] std::optional<StableSlot>
 InstantiateTopology(SceneInstance::AuthoringScene &scene,
                     const AZStd::vector<ScenePolytreeNodeDescriptor> &nodes) {
@@ -71,39 +43,6 @@ InstantiateTopology(SceneInstance::AuthoringScene &scene,
             stable.m_initialLocal};
 }
 } // namespace
-
-std::unique_ptr<SceneInstance> SceneInstance::Create(const TankSceneDescriptor &descriptor) {
-    if (descriptor.m_spawnTransforms.empty() || descriptor.m_fixedStepNanoseconds <= 0 ||
-        descriptor.m_maxCatchUpSteps == 0) {
-        return {};
-    }
-
-    AuthoringScene authoring;
-    std::vector<StableTankInstance> stableTanks;
-    stableTanks.reserve(descriptor.m_spawnTransforms.size());
-    std::ranges::transform(descriptor.m_spawnTransforms, std::back_inserter(stableTanks),
-                           [&](const AZ::Transform &spawnTransform) {
-                               return InstantiateTank(authoring, spawnTransform);
-                           });
-
-    wz::core::graph::FreezeWorkspace freezeWorkspace;
-    auto frozen = scene_polytree::freeze_scene(authoring, freezeWorkspace);
-    if (!frozen) {
-        return {};
-    }
-
-    RuntimeScene runtime = std::move(frozen).value();
-    std::vector<RuntimeTankInstance> runtimeTanks;
-    runtimeTanks.reserve(stableTanks.size());
-    std::ranges::transform(
-        stableTanks, std::back_inserter(runtimeTanks),
-        [&](const StableTankInstance &tank) { return ResolveLegacyTank(runtime, tank); });
-
-    return std::unique_ptr<SceneInstance>(
-        new SceneInstance(std::move(runtime), std::move(runtimeTanks), {},
-                          std::chrono::nanoseconds(descriptor.m_fixedStepNanoseconds),
-                          descriptor.m_maxCatchUpSteps, true));
-}
 
 std::unique_ptr<SceneInstance>
 SceneInstance::Create(const ScenePolytreeSceneDescriptor &descriptor) {
@@ -152,7 +91,6 @@ SceneInstance::Create(const ScenePolytreeSceneDescriptor &descriptor) {
     }
 
     RuntimeScene runtime = std::move(frozen).value();
-    std::vector<RuntimeTankInstance> runtimeTanks;
     AZStd::vector<RuntimePartition> runtimePartitions;
     runtimePartitions.reserve(stablePartitions.size());
     std::ranges::for_each(stablePartitions, [&](const StablePartition &stablePartition) {
@@ -166,38 +104,22 @@ SceneInstance::Create(const ScenePolytreeSceneDescriptor &descriptor) {
                                    [&](const StableNodeBinding &binding) {
                                        return ResolveNodeBinding(runtime, binding);
                                    });
-            const auto hull = std::ranges::find(runtimeSlot.m_nodes, AZ::Name("Hull"),
-                                                &RuntimeNodeBinding::m_bindingId);
-            const auto turret = std::ranges::find(runtimeSlot.m_nodes, AZ::Name("Turret"),
-                                                  &RuntimeNodeBinding::m_bindingId);
-            const auto gun = std::ranges::find(runtimeSlot.m_nodes, AZ::Name("Gun"),
-                                               &RuntimeNodeBinding::m_bindingId);
-            if (hull != runtimeSlot.m_nodes.end() && turret != runtimeSlot.m_nodes.end() &&
-                gun != runtimeSlot.m_nodes.end()) {
-                runtimeSlot.m_tankIndex = aznumeric_cast<AZ::u32>(runtimeTanks.size());
-                runtimeTanks.push_back({hull->m_node, turret->m_node, gun->m_node});
-            }
             runtimePartition.m_slots.push_back(AZStd::move(runtimeSlot));
         });
         runtimePartitions.push_back(AZStd::move(runtimePartition));
     });
 
     return std::unique_ptr<SceneInstance>(new SceneInstance(
-        std::move(runtime), std::move(runtimeTanks), AZStd::move(runtimePartitions),
-        std::chrono::nanoseconds(descriptor.m_fixedStepNanoseconds), descriptor.m_maxCatchUpSteps,
-        false));
+        std::move(runtime), AZStd::move(runtimePartitions),
+        std::chrono::nanoseconds(descriptor.m_fixedStepNanoseconds), descriptor.m_maxCatchUpSteps));
 }
 
-SceneInstance::SceneInstance(RuntimeScene runtime, std::vector<RuntimeTankInstance> tanks,
-                             AZStd::vector<RuntimePartition> partitions,
-                             std::chrono::nanoseconds fixedStep, AZ::u32 maxCatchUpSteps,
-                             bool requireAllTanksReady)
-    : m_runtime(std::move(runtime)), m_tanks(std::move(tanks)),
-      m_partitions(AZStd::move(partitions)), m_activeMotion(m_runtime.topology()),
-      m_entityBindings(m_runtime.state().size()), m_readyTanks(m_tanks.size(), false),
+SceneInstance::SceneInstance(RuntimeScene runtime, AZStd::vector<RuntimePartition> partitions,
+                             std::chrono::nanoseconds fixedStep, AZ::u32 maxCatchUpSteps)
+    : m_runtime(std::move(runtime)), m_partitions(AZStd::move(partitions)),
+      m_activeMotion(m_runtime.topology()), m_entityBindings(m_runtime.state().size()),
       m_stepSequence(fixedStep), m_evaluatedStamp(m_runtime.state().size()),
-      m_topologicalRank(m_runtime.state().size()), m_maxCatchUpSteps(maxCatchUpSteps),
-      m_requireAllTanksReady(requireAllTanksReady) {
+      m_topologicalRank(m_runtime.state().size()), m_maxCatchUpSteps(maxCatchUpSteps) {
     m_evaluatedChanges.reserve(m_runtime.state().size());
     const auto order = wz::core::graph::evaluation_plan(m_runtime.topology()).topological_order;
     std::ranges::for_each(std::views::iota(std::size_t{}, order.size()), [&](std::size_t index) {
@@ -306,9 +228,6 @@ ScenePolytreeResultCode SceneInstance::UnbindSlot(SlotHandle slot) {
     std::ranges::for_each(runtimeSlot->m_nodes, [&](const RuntimeNodeBinding &node) {
         m_entityBindings[node.m_node] = EntityTarget{};
     });
-    if (runtimeSlot->m_tankIndex < m_readyTanks.size()) {
-        m_readyTanks[runtimeSlot->m_tankIndex] = false;
-    }
     return ScenePolytreeResultCode::Success;
 }
 
@@ -347,114 +266,7 @@ NodeResult SceneInstance::ResolveNode(SlotHandle slot, const AZ::Name &bindingId
                             SceneNodeHandle{slot, found->m_bindingId}};
 }
 
-TankHandle SceneInstance::ResolveTank(SlotHandle slot) const {
-    const RuntimeSlot *runtimeSlot = FindSlot(slot);
-    return runtimeSlot != nullptr && runtimeSlot->m_tankIndex < m_tanks.size()
-               ? TankHandle{slot.m_spawner.m_scene, runtimeSlot->m_tankIndex}
-               : TankHandle{};
-}
-
-bool SceneInstance::MarkReady(AZ::u32 tankIndex) {
-    if (tankIndex >= m_readyTanks.size()) {
-        return false;
-    }
-    m_readyTanks[tankIndex] = true;
-    return true;
-}
-
-bool SceneInstance::Bind(AZ::u32 tankIndex, const TankEntityBindings &bindings) {
-    const std::array identityOffsets{
-        AZ::Transform::CreateIdentity(),
-        AZ::Transform::CreateIdentity(),
-        AZ::Transform::CreateIdentity(),
-    };
-    return BindWithOffsets(tankIndex, bindings, identityOffsets);
-}
-
-bool SceneInstance::BindProjected(AZ::u32 tankIndex, const TankEntityBindings &bindings,
-                                  const std::array<AZ::Transform, 3> &targetWorldTransforms,
-                                  const std::array<AZ::Transform, 2> &pivotWorldTransforms) {
-    if (tankIndex >= m_tanks.size() || !bindings.IsComplete()) {
-        return false;
-    }
-
-    const RuntimeTankInstance &tank = m_tanks[tankIndex];
-    EvaluateDirty();
-    const AZ::Transform hullWorld = m_runtime.state().world(tank.m_hull).m_value;
-    const AZ::Transform turretLocal = hullWorld.GetInverse() * pivotWorldTransforms[0];
-    const AZ::Transform gunLocal = pivotWorldTransforms[0].GetInverse() * pivotWorldTransforms[1];
-    if (m_runtime.set_local(tank.m_turret, AzTransformValue(turretLocal)) !=
-            scene_polytree::transform_error::none ||
-        m_runtime.set_local(tank.m_gun, AzTransformValue(gunLocal)) !=
-            scene_polytree::transform_error::none) {
-        return false;
-    }
-    EvaluateDirty();
-    const std::array nodes{tank.m_hull, tank.m_turret, tank.m_gun};
-    std::array<AZ::Transform, 3> nodeToTargets;
-    std::ranges::transform(nodes, targetWorldTransforms, nodeToTargets.begin(),
-                           [&](wz::core::graph::NodeHandle node, const AZ::Transform &targetWorld) {
-                               return m_runtime.state().world(node).m_value.GetInverse() *
-                                      targetWorld;
-                           });
-    return BindWithOffsets(tankIndex, bindings, nodeToTargets);
-}
-
-bool SceneInstance::BindWithOffsets(AZ::u32 tankIndex, const TankEntityBindings &bindings,
-                                    const std::array<AZ::Transform, 3> &nodeToTargets) {
-    if (tankIndex >= m_tanks.size() || !bindings.IsComplete()) {
-        return false;
-    }
-
-    const RuntimeTankInstance &tank = m_tanks[tankIndex];
-    const std::array nodes{tank.m_hull, tank.m_turret, tank.m_gun};
-    const std::array entities{bindings.m_hull, bindings.m_turret, bindings.m_gun};
-    const bool duplicatesWithinTank =
-        entities[0] == entities[1] || entities[0] == entities[2] || entities[1] == entities[2];
-    const bool duplicatesAnotherNode = std::ranges::any_of(entities, [&](AZ::EntityId entityId) {
-        return std::ranges::any_of(m_entityBindings, [&](const EntityTarget &target) {
-            if (target.m_entity != entityId) {
-                return false;
-            }
-            const auto existing = static_cast<std::size_t>(&target - m_entityBindings.data());
-            return std::ranges::find(nodes, existing) == nodes.end();
-        });
-    });
-    if (duplicatesWithinTank || duplicatesAnotherNode) {
-        return false;
-    }
-
-    const auto indices = std::views::iota(std::size_t{}, nodes.size());
-    std::ranges::for_each(indices, [&](std::size_t index) {
-        m_entityBindings[nodes[index]] = {entities[index], nodeToTargets[index]};
-        (void)m_runtime.state().mark_dirty(nodes[index]);
-    });
-    return true;
-}
-
-bool SceneInstance::Unbind(AZ::u32 tankIndex) {
-    if (tankIndex >= m_tanks.size()) {
-        return false;
-    }
-    const RuntimeTankInstance &tank = m_tanks[tankIndex];
-    const std::array nodes{tank.m_hull, tank.m_turret, tank.m_gun};
-    std::ranges::for_each(nodes, [&](wz::core::graph::NodeHandle node) {
-        m_entityBindings[node] = EntityTarget{};
-        (void)m_activeMotion.deactivate(node);
-    });
-    m_readyTanks[tankIndex] = false;
-    if (m_requireAllTanksReady) {
-        m_active = false;
-        m_activeMotion.clear();
-        m_accumulator = {};
-    }
-    return true;
-}
-
 bool SceneInstance::SetActive(bool active) {
-    if (active && (m_requireAllTanksReady ? (!AllBound() || !AllReady()) : !AnyReadyAndBound())) {
-        return false;
-    }
     m_active = active;
     if (!active) {
         m_activeMotion.clear();
@@ -463,45 +275,25 @@ bool SceneInstance::SetActive(bool active) {
     return true;
 }
 
-bool SceneInstance::SubmitIntent(AZ::u32 tankIndex, const TankIntent &intent) {
-    if (tankIndex >= m_tanks.size()) {
-        return false;
-    }
-    using MotionState = scene_polytree::motion::motion_state<AZ::Vector3, AZ::Vector3>;
-    using MotionUpdate = scene_polytree::motion::motion_update<AZ::Vector3, AZ::Vector3>;
-    const RuntimeTankInstance &tank = m_tanks[tankIndex];
-    const std::array updates{
-        MotionUpdate{tank.m_hull, MotionState{AZ::Vector3(0.0f, intent.m_forwardSpeed, 0.0f),
-                                              AZ::Vector3(0.0f, 0.0f, intent.m_hullYawRate)}},
-        MotionUpdate{tank.m_turret, MotionState{AZ::Vector3::CreateZero(),
-                                                AZ::Vector3(0.0f, 0.0f, intent.m_turretYawRate)}},
-        MotionUpdate{tank.m_gun, MotionState{AZ::Vector3::CreateZero(),
-                                             AZ::Vector3(intent.m_gunPitchRate, 0.0f, 0.0f)}},
-    };
-    return m_activeMotion.apply_updates(updates, m_policy) ==
-           scene_polytree::motion::motion_error::none;
+bool SceneInstance::CorrectLocal(const SceneNodeHandle &node, const AZ::Transform &local) {
+    const RuntimeNodeBinding *binding = FindNode(node);
+    return binding != nullptr && m_runtime.set_local(binding->m_node, AzTransformValue(local)) ==
+                                     scene_polytree::transform_error::none;
 }
 
-bool SceneInstance::CorrectLocal(AZ::u32 tankIndex, TankNodeRole role, const AZ::Transform &local) {
-    const auto node = NodeForRole(tankIndex, role);
-    return node != wz::core::graph::INVALID_NODE &&
-           m_runtime.set_local(node, AzTransformValue(local)) ==
-               scene_polytree::transform_error::none;
-}
-
-bool SceneInstance::CorrectWorld(AZ::u32 tankIndex, TankNodeRole role, const AZ::Transform &world) {
-    const auto node = NodeForRole(tankIndex, role);
-    if (node == wz::core::graph::INVALID_NODE) {
+bool SceneInstance::CorrectWorld(const SceneNodeHandle &node, const AZ::Transform &world) {
+    const RuntimeNodeBinding *binding = FindNode(node);
+    if (binding == nullptr) {
         return false;
     }
     if (HasDirtyTransforms()) {
         EvaluateDirty();
     }
-    const auto parent = wz::core::graph::parent(m_runtime.topology(), node);
+    const auto parent = wz::core::graph::parent(m_runtime.topology(), binding->m_node);
     const AZ::Transform local = parent == wz::core::graph::INVALID_NODE
                                     ? world
                                     : m_runtime.state().world(parent).m_value.GetInverse() * world;
-    return m_runtime.set_local(node, AzTransformValue(local)) ==
+    return m_runtime.set_local(binding->m_node, AzTransformValue(local)) ==
            scene_polytree::transform_error::none;
 }
 
@@ -563,7 +355,7 @@ SceneStatistics SceneInstance::GetStatistics() const {
             }));
     });
     return {
-        aznumeric_cast<AZ::u32>(m_tanks.size()),
+        aznumeric_cast<AZ::u32>(m_runtime.state().size()),
         aznumeric_cast<AZ::u32>(m_activeMotion.size()),
         m_lastSynchronizedNodeCount,
         m_stepSequence.next_tick(),
@@ -573,26 +365,6 @@ SceneStatistics SceneInstance::GetStatistics() const {
         reserved,
         bound,
     };
-}
-
-bool SceneInstance::AllBound() const {
-    return std::ranges::all_of(
-        m_entityBindings, [](const EntityTarget &target) { return target.m_entity.IsValid(); });
-}
-
-bool SceneInstance::AllReady() const {
-    return std::ranges::all_of(m_readyTanks, [](bool ready) { return ready; });
-}
-
-bool SceneInstance::AnyReadyAndBound() const {
-    const auto indices = std::views::iota(std::size_t{}, m_tanks.size());
-    return std::ranges::any_of(indices, [&](std::size_t index) {
-        const RuntimeTankInstance &tank = m_tanks[index];
-        const std::array nodes{tank.m_hull, tank.m_turret, tank.m_gun};
-        return m_readyTanks[index] && std::ranges::all_of(nodes, [&](const auto node) {
-                   return m_entityBindings[node].m_entity.IsValid();
-               });
-    });
 }
 
 bool SceneInstance::HasDirtyTransforms() const { return m_runtime.state().has_dirty_transforms(); }
@@ -689,30 +461,31 @@ const RuntimeSlot *SceneInstance::FindSlot(const SlotHandle &slot) const {
                                                                                    : nullptr;
 }
 
+RuntimeNodeBinding *SceneInstance::FindNode(const SceneNodeHandle &node) {
+    RuntimeSlot *slot = FindSlot(node.m_slot);
+    if (slot == nullptr || node.m_bindingId.IsEmpty()) {
+        return nullptr;
+    }
+    const auto found =
+        std::ranges::find(slot->m_nodes, node.m_bindingId, &RuntimeNodeBinding::m_bindingId);
+    return found != slot->m_nodes.end() ? &*found : nullptr;
+}
+
+const RuntimeNodeBinding *SceneInstance::FindNode(const SceneNodeHandle &node) const {
+    const RuntimeSlot *slot = FindSlot(node.m_slot);
+    if (slot == nullptr || node.m_bindingId.IsEmpty()) {
+        return nullptr;
+    }
+    const auto found =
+        std::ranges::find(slot->m_nodes, node.m_bindingId, &RuntimeNodeBinding::m_bindingId);
+    return found != slot->m_nodes.end() ? &*found : nullptr;
+}
+
 void SceneInstance::ClearSlot(RuntimeSlot &slot) {
     std::ranges::for_each(slot.m_nodes, [&](const RuntimeNodeBinding &node) {
         m_entityBindings[node.m_node] = EntityTarget{};
         (void)m_activeMotion.deactivate(node.m_node);
         (void)m_runtime.set_local(node.m_node, AzTransformValue(node.m_initialLocal));
     });
-    if (slot.m_tankIndex < m_readyTanks.size()) {
-        m_readyTanks[slot.m_tankIndex] = false;
-    }
-}
-
-wz::core::graph::NodeHandle SceneInstance::NodeForRole(AZ::u32 tankIndex, TankNodeRole role) const {
-    if (tankIndex >= m_tanks.size()) {
-        return wz::core::graph::INVALID_NODE;
-    }
-    const RuntimeTankInstance &tank = m_tanks[tankIndex];
-    switch (role) {
-    case TankNodeRole::Hull:
-        return tank.m_hull;
-    case TankNodeRole::Turret:
-        return tank.m_turret;
-    case TankNodeRole::Gun:
-        return tank.m_gun;
-    }
-    return wz::core::graph::INVALID_NODE;
 }
 } // namespace ScenePolytree::Internal

@@ -5,7 +5,7 @@
 `scene_polytree_performance_benchmark` measures topology compilation, transform
 planning and propagation, motion and active-set maintenance, and the
 engine-neutral synchronization boundary. It uses the real rigid-pose policy
-and articulated tank schema without linking O3DE.
+and a generic three-node articulation schema without linking O3DE.
 
 The runner emits JSON Lines to standard output. The first record describes the
 machine, compiler, build, revision, seed, and invocation. Each remaining record

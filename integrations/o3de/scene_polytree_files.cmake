@@ -4,11 +4,6 @@ set(FILES
     Code/Include/ScenePolytree/ScenePolytreePrefabNodeComponent.h
     Code/Include/ScenePolytree/ScenePolytreeTypeIds.h
     Code/Include/ScenePolytree/ScenePolytreeTypes.h
-    Code/Include/ScenePolytree/Tank/AiTankIntentAdapterComponent.h
-    Code/Include/ScenePolytree/Tank/PlayerTankIntentAdapterComponent.h
-    Code/Include/ScenePolytree/Tank/ScenePolytreeTankSpawnerComponent.h
-    Code/Include/ScenePolytree/Tank/TankArticulationBindingComponent.h
-    Code/Include/ScenePolytree/Tank/TankNodeBindingComponent.h
     Code/Source/AzTransformPolicy.cpp
     Code/Source/AzTransformPolicy.h
     Code/Source/PrefabTopology.cpp
@@ -19,10 +14,4 @@ set(FILES
     Code/Source/ScenePolytreePrefabNodeComponent.cpp
     Code/Source/ScenePolytreeSystemComponent.cpp
     Code/Source/ScenePolytreeSystemComponent.h
-    Code/Source/Tank/AiTankIntentAdapterComponent.cpp
-    Code/Source/Tank/PlayerTankIntentAdapterComponent.cpp
-    Code/Source/Tank/ScenePolytreeTankSpawnerComponent.cpp
-    Code/Source/Tank/TankArticulationBindingComponent.cpp
-    Code/Source/Tank/TankNodeBindingComponent.cpp
-    Code/Source/Tank/TankIntent.cpp
 )

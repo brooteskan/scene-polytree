@@ -21,11 +21,6 @@ option(
     ${_scene_polytree_tests_default}
 )
 option(
-    SCENE_POLYTREE_BUILD_EXAMPLES
-    "Build scene-polytree examples"
-    ${PROJECT_IS_TOP_LEVEL}
-)
-option(
     SCENE_POLYTREE_BUILD_BENCHMARKS
     "Build scene-polytree benchmarks"
     OFF
@@ -92,14 +87,6 @@ target_link_libraries(scene_polytree_cpu_executor PUBLIC Threads::Threads)
 
 if(SCENE_POLYTREE_BUILD_TESTS)
     enable_testing()
-endif()
-
-if(
-    SCENE_POLYTREE_BUILD_EXAMPLES
-    OR SCENE_POLYTREE_BUILD_TESTS
-    OR SCENE_POLYTREE_BUILD_BENCHMARKS
-)
-    add_subdirectory(examples)
 endif()
 
 if(SCENE_POLYTREE_BUILD_BENCHMARKS)
