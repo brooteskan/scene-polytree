@@ -129,6 +129,8 @@ Before adding traversal or evaluation code, see:
 - [Transform evaluation contract](docs/transforms.md)
 - [Motion extension contract](docs/motion.md)
 - [Motion storage benchmark](docs/motion-storage-results.md)
+- [Performance baselines](docs/performance-baselines.md)
+- [Parallel execution recommendation](docs/parallel-execution-recommendation.md)
 - [Extraction inventory](docs/extraction-inventory.md)
 - [Behavior-to-test manifest](docs/behavior-test-manifest.md)
 - [Baseline test report](docs/baseline-test-report.md)

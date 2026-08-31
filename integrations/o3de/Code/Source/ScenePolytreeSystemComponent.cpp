@@ -213,12 +213,13 @@ void ScenePolytreeSystemComponent::Process(const BindCommand &command) {
     std::array<AZ::Transform, 5> worldTransforms;
     worldTransforms.fill(AZ::Transform::CreateIdentity());
     bool valid = application != nullptr && command.m_bindings.IsComplete();
-    for (std::size_t left = 0; left < entityIds.size(); ++left) {
-        for (std::size_t right = left + 1; right < entityIds.size(); ++right) {
-            valid = valid && entityIds[left] != entityIds[right];
-        }
-    }
     const auto indices = std::views::iota(std::size_t{}, entityIds.size());
+    valid = valid && std::ranges::all_of(indices, [&](std::size_t left) {
+        const auto later = std::views::iota(left + 1, entityIds.size());
+        return std::ranges::all_of(later, [&](std::size_t right) {
+            return entityIds[left] != entityIds[right];
+        });
+    });
     std::ranges::for_each(indices, [&](std::size_t index) {
         AZ::Entity *entity = valid ? application->FindEntity(entityIds[index]) : nullptr;
         auto *transform = valid ? AZ::TransformBus::FindFirstHandler(entityIds[index]) : nullptr;
