@@ -1,0 +1,19 @@
+set(FILES
+    Code/Include/ScenePolytree/ScenePolytreeBus.h
+    Code/Include/ScenePolytree/ScenePolytreeTypeIds.h
+    Code/Include/ScenePolytree/Tank/AiTankIntentAdapterComponent.h
+    Code/Include/ScenePolytree/Tank/PlayerTankIntentAdapterComponent.h
+    Code/Include/ScenePolytree/Tank/ScenePolytreeTankSpawnerComponent.h
+    Code/Include/ScenePolytree/Tank/TankNodeBindingComponent.h
+    Code/Source/AzTransformPolicy.cpp
+    Code/Source/AzTransformPolicy.h
+    Code/Source/SceneInstance.cpp
+    Code/Source/SceneInstance.h
+    Code/Source/ScenePolytreeSystemComponent.cpp
+    Code/Source/ScenePolytreeSystemComponent.h
+    Code/Source/Tank/AiTankIntentAdapterComponent.cpp
+    Code/Source/Tank/PlayerTankIntentAdapterComponent.cpp
+    Code/Source/Tank/ScenePolytreeTankSpawnerComponent.cpp
+    Code/Source/Tank/TankNodeBindingComponent.cpp
+    Code/Source/Tank/TankIntent.cpp
+)
