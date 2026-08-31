@@ -46,6 +46,7 @@ target_link_libraries(
     scene_polytree_performance_benchmark
     PRIVATE
         scene-polytree::motion
+        scene-polytree::cpu-executor
         scene_polytree_tank_example_support
 )
 target_compile_definitions(

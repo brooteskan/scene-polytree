@@ -29,12 +29,22 @@ order. Calling `set` with stationary state removes the record. `deactivate` and
 `clear` are explicit alternatives, while `apply_updates` accepts a batch from
 controller or simulation code.
 
-The set exposes records in ascending handle order without allocation. Lookup is
-`O(log A)` for `A` active nodes; vector insertion and removal can move `O(A)`
-records, and insertion may grow storage. A batch of `U` updates therefore has a
-worst case of `O(U * A)`. The batch is validated before its first mutation and
-requires a forward range so validation and application can make two passes.
-Any set mutation can invalidate the record span and references into it.
+The set exposes records in ascending handle order without allocation. The
+two-argument `apply_updates(updates, policy)` overload preserves the original
+per-record behavior: lookup is `O(log A)` for `A` active nodes, insertion and
+removal can move `O(A)` records, and a batch of `U` updates can therefore cost
+`O(U * A)`.
+
+Frame-time bulk maintenance should use the three-argument overload with an
+`active_motion_update_workspace`. It validates every handle before mutation,
+copies and sorts updates by `NodeHandle`, coalesces duplicates with
+last-write-wins semantics, and performs one linear merge with the current
+records. Its time is `O(U log U + A + U)` and its retained scratch is
+`O(A + U)`. Both set buffers and workspace buffers retain capacity, so repeated
+same-size batches allocate zero bytes after the first call. An invalid handle
+leaves records, record order, and the mutation generation unchanged. Any
+successful logical mutation can invalidate the record span and references into
+it.
 
 The set is sparse because motion is optional and typical scenes have many more
 stationary than moving nodes. The benchmark compares this choice with a dense
@@ -53,12 +63,13 @@ state-plus-active-flag candidate; see
    transform policy.
 5. Advance the sequence tick only after success.
 
-Integration visits `A` active records. Dirty planning visits `N` topology
-nodes, and transform composition visits only the `C` nodes selected by that
-plan, for `O(A + N + C)` time. Motion scratch is `O(A)` and is retained by the
-caller-owned workspace; capacity growth may allocate, while reuse within
-capacity does not. Transform planning has the allocation behavior documented
-by the core transform contract.
+Integration visits `A` active records. After topology metadata is prepared,
+dirty planning visits the exact direct-dirty frontier and the affected
+subtrees, and transform composition visits only the `C` selected nodes. Motion
+scratch is `O(A)` and is retained by the caller-owned workspace; capacity
+growth may allocate, while reuse within capacity does not. Transform planning
+has the allocation and complexity behavior documented by the core transform
+contract.
 
 The returned `motion_evaluation_result` contains the nodes integrated directly,
 the nodes whose world transforms changed after descendant propagation, the
@@ -83,8 +94,9 @@ updates, fixed-step sequence, and motion/transform policies, the extension
 produces the same integration order, changed-node order, tick progression, and
 policy results. Active records are integrated in ascending `NodeHandle` order,
 so registration order among distinct nodes is not observable once their final
-motion states match. Multiple updates for one node in a batch are applied in
-input order and the last update determines its state.
+motion states match. Multiple updates for one node use last-write-wins
+semantics. The optimized batch overload makes only the final update observable
+and emits records in ascending `NodeHandle` order regardless of input order.
 
 `fixed_step_sequence` is deliberately not a wall-clock scheduler. The caller
 owns elapsed-time accumulation, catch-up limits, pausing, interpolation, and the
@@ -108,6 +120,12 @@ motion_policy motion;
 transform_policy transforms;
 
 active.set(node, {linear, angular}, motion);
+
+std::vector<decltype(active)::update_type> updates = make_updates();
+scene_polytree::motion::active_motion_update_workspace<velocity,
+                                                        angular_velocity>
+    update_workspace;
+active.apply_updates(updates, motion, update_workspace);
 
 scene_polytree::motion::fixed_step_sequence steps{std::chrono::milliseconds{16}};
 scene_polytree::motion::motion_evaluation_workspace<pose> motion_workspace;

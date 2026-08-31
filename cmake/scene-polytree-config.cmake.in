@@ -3,6 +3,7 @@
 include(CMakeFindDependencyMacro)
 find_dependency(algo CONFIG)
 find_dependency(polytree 0.2 CONFIG)
+find_dependency(Threads)
 
 include("${CMAKE_CURRENT_LIST_DIR}/scene-polytree-targets.cmake")
 check_required_components(scene-polytree)

@@ -61,19 +61,23 @@ struct allocation_header {
     std::size_t size{};
 };
 
-struct probe_counters {
-    std::size_t allocation_count{};
-    std::size_t allocated_bytes{};
-    std::size_t peak_absolute_live_bytes{};
-};
-
 constinit std::atomic<std::size_t> live_bytes{};
-thread_local probe_counters *active_probe{};
+constinit std::atomic<std::size_t> measured_allocation_count{};
+constinit std::atomic<std::size_t> measured_allocated_bytes{};
+constinit std::atomic<std::size_t> measured_peak_absolute_live_bytes{};
+constinit std::atomic<bool> probe_active{};
 
 void note_peak(std::size_t value) noexcept {
-    if (active_probe != nullptr) {
-        active_probe->peak_absolute_live_bytes =
-            std::max(active_probe->peak_absolute_live_bytes, value);
+    if (!probe_active.load(std::memory_order_relaxed)) {
+        return;
+    }
+    auto peak = measured_peak_absolute_live_bytes.load(std::memory_order_relaxed);
+    if (peak >= value) {
+        return;
+    }
+    if (!measured_peak_absolute_live_bytes.compare_exchange_weak(
+            peak, value, std::memory_order_relaxed)) {
+        note_peak(value);
     }
 }
 
@@ -91,9 +95,9 @@ void note_peak(std::size_t value) noexcept {
     header->base = base;
     header->size = size;
     const auto current = live_bytes.fetch_add(size, std::memory_order_relaxed) + size;
-    if (active_probe != nullptr) {
-        ++active_probe->allocation_count;
-        active_probe->allocated_bytes += size;
+    if (probe_active.load(std::memory_order_relaxed)) {
+        measured_allocation_count.fetch_add(1, std::memory_order_relaxed);
+        measured_allocated_bytes.fetch_add(size, std::memory_order_relaxed);
         note_peak(current);
     }
     return reinterpret_cast<void *>(aligned);
@@ -233,28 +237,35 @@ struct measurement {
     std::size_t scratch_bytes{};
     double checksum{};
     bool correct{true};
+    std::size_t worker_count{};
+    std::size_t task_grain{};
+    std::size_t task_count{};
+    std::size_t parallel_dispatch_count{};
 };
 
 template <class Function> [[nodiscard]] timing_sample measure(Function &&function) {
-    benchmark_alloc::probe_counters counters;
     const auto initial_live = benchmark_alloc::live_bytes.load(std::memory_order_relaxed);
-    counters.peak_absolute_live_bytes = initial_live;
-    benchmark_alloc::active_probe = &counters;
+    benchmark_alloc::measured_allocation_count.store(0, std::memory_order_relaxed);
+    benchmark_alloc::measured_allocated_bytes.store(0, std::memory_order_relaxed);
+    benchmark_alloc::measured_peak_absolute_live_bytes.store(initial_live,
+                                                              std::memory_order_relaxed);
+    benchmark_alloc::probe_active.store(true, std::memory_order_release);
     const auto start = clock_type::now();
     try {
         std::forward<Function>(function)();
     } catch (...) {
-        benchmark_alloc::active_probe = nullptr;
+        benchmark_alloc::probe_active.store(false, std::memory_order_release);
         throw;
     }
     const auto finish = clock_type::now();
-    benchmark_alloc::active_probe = nullptr;
+    benchmark_alloc::probe_active.store(false, std::memory_order_release);
     const auto final_live = benchmark_alloc::live_bytes.load(std::memory_order_relaxed);
     return {
         std::chrono::duration<double, std::nano>(finish - start).count(),
-        counters.allocation_count,
-        counters.allocated_bytes,
-        counters.peak_absolute_live_bytes - initial_live,
+        benchmark_alloc::measured_allocation_count.load(std::memory_order_relaxed),
+        benchmark_alloc::measured_allocated_bytes.load(std::memory_order_relaxed),
+        benchmark_alloc::measured_peak_absolute_live_bytes.load(std::memory_order_relaxed) -
+            initial_live,
         static_cast<std::int64_t>(final_live) - static_cast<std::int64_t>(initial_live),
     };
 }
@@ -342,6 +353,10 @@ void emit_measurement(const measurement &record) {
               << ",\"scratch_bytes\":" << record.scratch_bytes
               << ",\"topology_payload_bytes\":" << record.topology.topology_payload_bytes
               << ",\"checksum\":" << record.checksum
+              << ",\"worker_count\":" << record.worker_count
+              << ",\"task_grain\":" << record.task_grain
+              << ",\"task_count\":" << record.task_count
+              << ",\"parallel_dispatch_count\":" << record.parallel_dispatch_count
               << ",\"correct\":" << (record.correct ? "true" : "false") << "}\n";
 }
 
@@ -462,7 +477,9 @@ describe_topology(const wz::core::graph::Polytree<N, E> &topology) {
 
 template <class Runtime> [[nodiscard]] std::size_t retained_bytes(const Runtime &runtime) {
     return describe_topology(runtime.topology()).topology_payload_bytes +
-           runtime.state().records().size_bytes() + runtime.identities().storage_bytes();
+           runtime.state().records().size_bytes() +
+           runtime.state().dirty_frontier_capacity_bytes() +
+           runtime.identities().storage_bytes();
 }
 
 [[nodiscard]] double pose_checksum(const tank::rigid_pose &pose) noexcept {
@@ -499,6 +516,26 @@ template <class Runtime>
         }
     });
     return count;
+}
+
+template <class Topology, class State>
+void make_full_scan_reference_plan(
+    const Topology &topology, const State &state, std::vector<std::uint8_t> &affected,
+    std::vector<wz::core::graph::NodeHandle> &ordered_nodes) {
+    affected.assign(state.size(), 0);
+    ordered_nodes.clear();
+    ordered_nodes.reserve(state.size());
+    std::ranges::for_each(wz::core::graph::evaluation_plan(topology).topological_order,
+                          [&](wz::core::graph::NodeHandle node) {
+                              const auto parent = wz::core::graph::parent(topology, node);
+                              const bool parent_affected =
+                                  parent != wz::core::graph::INVALID_NODE && affected[parent] != 0;
+                              const bool node_affected = state.record(node).dirty || parent_affected;
+                              affected[node] = static_cast<std::uint8_t>(node_affected);
+                              if (node_affected) {
+                                  ordered_nodes.push_back(node);
+                              }
+                          });
 }
 
 [[nodiscard]] std::vector<std::size_t> synthetic_sizes(const options &configuration) {
@@ -709,6 +746,19 @@ void run_transform_case(std::string_view shape, std::size_t node_total, double d
                               initialize_world(runtime, policy);
                               const auto directly_dirty =
                                   mark_dirty(runtime, dirty_ratio, root_pattern);
+                              const auto topology = describe_topology(runtime.topology());
+                              std::vector<std::uint8_t> reference_affected;
+                              std::vector<wz::core::graph::NodeHandle> reference_nodes;
+                              const auto full_scan_cold_timing = measure([&] {
+                                  make_full_scan_reference_plan(
+                                      runtime.topology(), runtime.state(), reference_affected,
+                                      reference_nodes);
+                              });
+                              const auto full_scan_warm_timing = measure([&] {
+                                  make_full_scan_reference_plan(
+                                      runtime.topology(), runtime.state(), reference_affected,
+                                      reference_nodes);
+                              });
                               scene_polytree::transform_evaluation_workspace workspace;
                               scene_polytree::transform_evaluation_plan plan;
                               const auto plan_timing = measure([&] {
@@ -720,15 +770,65 @@ void run_transform_case(std::string_view shape, std::size_t node_total, double d
                                   }
                                   plan = outcome.value();
                               });
-                              const auto topology = describe_topology(runtime.topology());
                               const auto changed_count = plan.ordered_nodes.size();
                               const auto actual_ratio =
                                   static_cast<double>(changed_count) / topology.node_count;
+                              const bool reference_match =
+                                  std::ranges::equal(reference_nodes, plan.ordered_nodes);
+                              const auto reference_scratch =
+                                  reference_affected.capacity() * sizeof(std::uint8_t) +
+                                  reference_nodes.capacity() *
+                                      sizeof(wz::core::graph::NodeHandle);
                               emit_measurement({
                                   "transform",
-                                  root_pattern ? "dirty_plan_root_cold" : "dirty_plan_cold",
+                                  root_pattern ? "dirty_plan_full_scan_root_cold"
+                                               : "dirty_plan_full_scan_cold",
                                   shape,
-                                  "topological",
+                                  "full_topological_scan_reference",
+                                  topology,
+                                  0,
+                                  0,
+                                  directly_dirty,
+                                  reference_nodes.size(),
+                                  0,
+                                  dirty_ratio,
+                                  actual_ratio,
+                                  sample,
+                                  1,
+                                  full_scan_cold_timing,
+                                  retained_bytes(runtime),
+                                  reference_scratch,
+                                  static_cast<double>(reference_nodes.size()),
+                                  reference_match,
+                              });
+                              emit_measurement({
+                                  "transform",
+                                  root_pattern ? "dirty_plan_full_scan_root_warm"
+                                               : "dirty_plan_full_scan_warm",
+                                  shape,
+                                  "full_topological_scan_reference",
+                                  topology,
+                                  0,
+                                  0,
+                                  directly_dirty,
+                                  reference_nodes.size(),
+                                  0,
+                                  dirty_ratio,
+                                  actual_ratio,
+                                  sample,
+                                  1,
+                                  full_scan_warm_timing,
+                                  retained_bytes(runtime),
+                                  reference_scratch,
+                                  static_cast<double>(reference_nodes.size()),
+                                  reference_match,
+                              });
+                              emit_measurement({
+                                  "transform",
+                                  root_pattern ? "dirty_plan_incremental_root_cold"
+                                               : "dirty_plan_incremental_cold",
+                                  shape,
+                                  "dirty_frontier_then_topological_subtrees",
                                   topology,
                                   0,
                                   0,
@@ -743,7 +843,7 @@ void run_transform_case(std::string_view shape, std::size_t node_total, double d
                                   retained_bytes(runtime),
                                   workspace.scratch_capacity_bytes(),
                                   static_cast<double>(changed_count),
-                                  true,
+                                  reference_match,
                               });
 
                               const auto warm_plan_timing = measure([&] {
@@ -757,9 +857,10 @@ void run_transform_case(std::string_view shape, std::size_t node_total, double d
                               });
                               emit_measurement({
                                   "transform",
-                                  root_pattern ? "dirty_plan_root_warm" : "dirty_plan_warm",
+                                  root_pattern ? "dirty_plan_incremental_root_warm"
+                                               : "dirty_plan_incremental_warm",
                                   shape,
-                                  "topological",
+                                  "dirty_frontier_then_topological_subtrees",
                                   topology,
                                   0,
                                   0,
@@ -774,7 +875,8 @@ void run_transform_case(std::string_view shape, std::size_t node_total, double d
                                   retained_bytes(runtime),
                                   workspace.scratch_capacity_bytes(),
                                   static_cast<double>(changed_count),
-                                  plan.ordered_nodes.size() == changed_count,
+                                  reference_match && plan.ordered_nodes.size() == changed_count &&
+                                      warm_plan_timing.allocation_count == 0,
                               });
 
                               std::vector<tank::rigid_pose> locals;
@@ -849,6 +951,7 @@ void run_transform_case(std::string_view shape, std::size_t node_total, double d
                                   kernel_match,
                               });
 
+                              auto parallel_seed = runtime.state();
                               scene_polytree::transform_evaluation_result evaluated;
                               const auto evaluation_timing = measure([&] {
                                   evaluated = scene_polytree::evaluate_transforms(
@@ -885,6 +988,71 @@ void run_transform_case(std::string_view shape, std::size_t node_total, double d
                                   workspace.scratch_capacity_bytes(),
                                   state_checksum(runtime),
                                   production_match && evaluated.changed_nodes.size() == changed_count,
+                              });
+
+                              scene_polytree::cpu_task_executor executor;
+                              const auto grains = configuration.smoke
+                                                      ? std::vector<std::size_t>{2'048}
+                                                      : std::vector<std::size_t>{1'024, 2'048,
+                                                                                 4'096, 8'192};
+                              std::ranges::for_each(grains, [&](std::size_t grain) {
+                                  auto parallel_state = parallel_seed;
+                                  scene_polytree::transform_evaluation_workspace
+                                      parallel_workspace;
+                                  const auto parallel_plan =
+                                      scene_polytree::make_transform_evaluation_plan(
+                                          runtime.topology(), parallel_state,
+                                          parallel_workspace);
+                                  scene_polytree::transform_evaluation_result parallel_result;
+                                  const auto parallel_timing = measure([&] {
+                                      parallel_result = scene_polytree::evaluate_transforms(
+                                          runtime.topology(), parallel_state,
+                                          parallel_plan.value(), policy, executor,
+                                          {.minimum_task_grain = grain});
+                                      if (!parallel_result) {
+                                          throw std::runtime_error(
+                                              "parallel transform evaluation failed");
+                                      }
+                                  });
+                                  const bool parallel_match = std::ranges::all_of(
+                                      indices, [&](std::size_t index) {
+                                          const auto node = static_cast<
+                                              wz::core::graph::NodeHandle>(index);
+                                          return parallel_state.world(node) ==
+                                                 runtime.state().world(node);
+                                      });
+                                  const auto statistics = executor.last_statistics();
+                                  const std::string order =
+                                      "dependency_levels_cpu_grain_" +
+                                      std::to_string(grain);
+                                  emit_measurement({
+                                      "transform",
+                                      root_pattern ? "evaluate_transforms_root"
+                                                   : "evaluate_transforms",
+                                      shape,
+                                      order,
+                                      topology,
+                                      0,
+                                      0,
+                                      directly_dirty,
+                                      parallel_result.changed_nodes.size(),
+                                      0,
+                                      dirty_ratio,
+                                      actual_ratio,
+                                      sample,
+                                      1,
+                                      parallel_timing,
+                                      retained_bytes(runtime),
+                                      parallel_workspace.scratch_capacity_bytes(),
+                                      state_checksum(runtime),
+                                      parallel_match &&
+                                          std::ranges::equal(parallel_result.changed_nodes,
+                                                             evaluated.changed_nodes),
+                                      executor.worker_count(),
+                                      grain,
+                                      statistics.task_count,
+                                      statistics.parallel_dispatch_count,
+                                  });
                               });
                           });
 }
@@ -965,6 +1133,39 @@ void apply_actor_intent_order(tank::active_set &active,
     });
 }
 
+[[nodiscard]] std::vector<tank::active_set::update_type>
+make_actor_intent_updates(std::span<const tank::runtime_tank_instance> instances,
+                          std::span<const std::size_t> order,
+                          const tank::tank_intent &intent) {
+    std::vector<tank::active_set::update_type> updates;
+    updates.reserve(order.size() * 3);
+    std::ranges::for_each(order, [&](std::size_t index) {
+        const auto instance = instances[index];
+        updates.push_back({instance.hull,
+                           {{0.0, intent.forward_speed, 0.0},
+                            {0.0, 0.0, intent.hull_yaw_rate}}});
+        updates.push_back(
+            {instance.turret, {{}, {0.0, 0.0, intent.turret_yaw_rate}}});
+        updates.push_back({instance.gun, {{}, {intent.gun_pitch_rate, 0.0, 0.0}}});
+    });
+    return updates;
+}
+
+[[nodiscard]] bool active_sets_match(const tank::active_set &left,
+                                     const tank::active_set &right) {
+    if (left.size() != right.size()) {
+        return false;
+    }
+    const auto indices = std::views::iota(std::size_t{}, left.size());
+    return std::ranges::all_of(indices, [&](std::size_t index) {
+        const auto &left_record = left.records()[index];
+        const auto &right_record = right.records()[index];
+        return left_record.node == right_record.node &&
+               left_record.state.linear_velocity == right_record.state.linear_velocity &&
+               left_record.state.angular_velocity == right_record.state.angular_velocity;
+    });
+}
+
 void run_motion_case(std::size_t actor_total, double active_ratio,
                      const options &configuration) {
     std::ranges::for_each(std::views::iota(std::size_t{}, configuration.samples),
@@ -977,6 +1178,10 @@ void run_motion_case(std::size_t actor_total, double active_ratio,
                               tank::active_set active{frozen.runtime.topology()};
                               tank::active_set reverse_active{frozen.runtime.topology()};
                               tank::active_set shuffled_active{frozen.runtime.topology()};
+                              tank::active_set batch_active{frozen.runtime.topology()};
+                              scene_polytree::motion::active_motion_update_workspace<
+                                  tank::vector3, tank::vector3>
+                                  batch_workspace;
                               const tank::tank_intent moving{2.0, 0.25, -0.5, 0.125};
                               const auto topology = describe_topology(frozen.runtime.topology());
                               std::vector<std::size_t> ascending_order(active_actors);
@@ -988,6 +1193,10 @@ void run_motion_case(std::size_t actor_total, double active_ratio,
                                   configuration.seed ^ static_cast<std::uint64_t>(actor_total) ^
                                   static_cast<std::uint64_t>(sample)};
                               std::ranges::shuffle(shuffled_order, random);
+                              const auto batch_updates = make_actor_intent_updates(
+                                  frozen.instances, shuffled_order, moving);
+                              const auto batch_stationary_updates = make_actor_intent_updates(
+                                  frozen.instances, shuffled_order, {});
 
                               const auto activation_timing = measure([&] {
                                   apply_actor_intent(active, frozen.instances, active_actors,
@@ -1069,6 +1278,37 @@ void run_motion_case(std::size_t actor_total, double active_ratio,
                                   shuffled_active.size() == active_actors * 3,
                               });
 
+                              const auto batch_activation_timing = measure([&] {
+                                  if (batch_active.apply_updates(batch_updates, policy,
+                                                                 batch_workspace) !=
+                                      scene_polytree::motion::motion_error::none) {
+                                      throw std::runtime_error(
+                                          "batched tank intent update failed");
+                                  }
+                              });
+                              emit_measurement({
+                                  "motion",
+                                  "active_set_activate_batch",
+                                  "articulated_tank_forest",
+                                  "validated_sort_coalesce_merge",
+                                  topology,
+                                  actor_total,
+                                  batch_active.size(),
+                                  0,
+                                  0,
+                                  0,
+                                  active_ratio,
+                                  0.0,
+                                  sample,
+                                  1,
+                                  batch_activation_timing,
+                                  retained_bytes(frozen.runtime) +
+                                      batch_active.storage_capacity_bytes(),
+                                  batch_workspace.scratch_capacity_bytes(),
+                                  static_cast<double>(batch_active.size()),
+                                  active_sets_match(batch_active, shuffled_active),
+                              });
+
                               const auto churn_actor_count =
                                   active_actors == 0 ? std::size_t{}
                                                      : std::max<std::size_t>(1, active_actors / 10);
@@ -1104,6 +1344,8 @@ void run_motion_case(std::size_t actor_total, double active_ratio,
                               });
 
                               const tank::tank_intent changed{3.0, -0.5, 0.75, -0.25};
+                              const auto changed_batch_updates = make_actor_intent_updates(
+                                  frozen.instances, shuffled_order, changed);
                               const auto update_timing = measure([&] {
                                   apply_actor_intent(active, frozen.instances, active_actors,
                                                      changed, policy);
@@ -1128,6 +1370,38 @@ void run_motion_case(std::size_t actor_total, double active_ratio,
                                   0,
                                   static_cast<double>(active.size()),
                                   active.size() == active_actors * 3,
+                              });
+
+                              const auto batch_update_timing = measure([&] {
+                                  if (batch_active.apply_updates(changed_batch_updates, policy,
+                                                                 batch_workspace) !=
+                                      scene_polytree::motion::motion_error::none) {
+                                      throw std::runtime_error(
+                                          "batched tank motion update failed");
+                                  }
+                              });
+                              emit_measurement({
+                                  "motion",
+                                  "active_set_update_batch_warm",
+                                  "articulated_tank_forest",
+                                  "validated_sort_coalesce_merge",
+                                  topology,
+                                  actor_total,
+                                  batch_active.size(),
+                                  0,
+                                  0,
+                                  0,
+                                  active_ratio,
+                                  0.0,
+                                  sample,
+                                  1,
+                                  batch_update_timing,
+                                  retained_bytes(frozen.runtime) +
+                                      batch_active.storage_capacity_bytes(),
+                                  batch_workspace.scratch_capacity_bytes(),
+                                  static_cast<double>(batch_active.size()),
+                                  active_sets_match(batch_active, active) &&
+                                      batch_update_timing.allocation_count == 0,
                               });
 
                               scene_polytree::motion::fixed_step_sequence sequence{
@@ -1258,6 +1532,37 @@ void run_motion_case(std::size_t actor_total, double active_ratio,
                                   0,
                                   static_cast<double>(reverse_active.size()),
                                   reverse_active.empty(),
+                              });
+
+                              const auto batch_deactivation_timing = measure([&] {
+                                  if (batch_active.apply_updates(batch_stationary_updates, policy,
+                                                                 batch_workspace) !=
+                                      scene_polytree::motion::motion_error::none) {
+                                      throw std::runtime_error(
+                                          "batched tank deactivation failed");
+                                  }
+                              });
+                              emit_measurement({
+                                  "motion",
+                                  "active_set_deactivate_batch",
+                                  "articulated_tank_forest",
+                                  "validated_sort_coalesce_merge",
+                                  topology,
+                                  actor_total,
+                                  batch_active.size(),
+                                  0,
+                                  0,
+                                  0,
+                                  active_ratio,
+                                  0.0,
+                                  sample,
+                                  1,
+                                  batch_deactivation_timing,
+                                  retained_bytes(frozen.runtime) +
+                                      batch_active.storage_capacity_bytes(),
+                                  batch_workspace.scratch_capacity_bytes(),
+                                  static_cast<double>(batch_active.size()),
+                                  batch_active.empty(),
                               });
                           });
 }
@@ -1398,6 +1703,33 @@ void run_synchronization_case(std::size_t actor_total, double changed_request,
                                   target_checksum,
                                   selected_correctly &&
                                       changed.size() == evaluated.changed_nodes.size(),
+                              });
+
+                              const auto direct_timing = measure([&] {
+                                  write_changed(frozen.runtime, evaluated.changed_nodes, targets,
+                                                policy);
+                              });
+                              emit_measurement({
+                                  "synchronization",
+                                  "direct_evaluated_batch_write",
+                                  "articulated_tank_forest",
+                                  "evaluated_topological_batch",
+                                  topology,
+                                  actor_total,
+                                  0,
+                                  directly_dirty,
+                                  evaluated.changed_nodes.size(),
+                                  0,
+                                  changed_request,
+                                  actual_ratio,
+                                  sample,
+                                  1,
+                                  direct_timing,
+                                  retained_bytes(frozen.runtime) +
+                                      targets.capacity() * sizeof(tank::rigid_pose),
+                                  0,
+                                  target_checksum,
+                                  selected_correctly,
                               });
                           });
 }

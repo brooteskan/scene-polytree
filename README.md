@@ -38,15 +38,19 @@ release, which resolves the matching algorithm package.
 - `scene-polytree::motion`: deterministic fixed-step local motion, sparse
   active-node storage, and centralized dirty-transform evaluation layered on
   the core.
+- `scene-polytree::cpu-executor`: persistent CPU workers for the optional
+  dependency-level transform overload. Link this target in addition to
+  `scene-polytree::core` when using that overload.
 - `scene-polytree::o3de`: reserved for the optional O3DE Gem adapter; it will
   not become the owner of scene topology.
 
-The core transform evaluator consumes only polytree's cached topological view.
-Local edits mark one node directly; planning derives affected descendants from
-parent state, and evaluation composes only those affected nodes. Stable-ID
-authoring state can be frozen initially or reconciled against a previous
-runtime snapshot so reparented subtrees update without touching unrelated
-roots.
+The core transform evaluator caches subtree metadata over polytree's
+topological view. Local edits enter an exact dirty frontier; planning expands
+only its owned subtrees, and evaluation composes only those affected nodes.
+Stable-ID authoring state can be frozen initially or reconciled against a
+previous runtime snapshot so reparented subtrees update without touching
+unrelated roots. Large, wide batches may be evaluated through the CPU executor;
+chains and sub-grain work remain sequential.
 
 ## Transform example
 
@@ -130,6 +134,7 @@ Before adding traversal or evaluation code, see:
 - [Motion extension contract](docs/motion.md)
 - [Motion storage benchmark](docs/motion-storage-results.md)
 - [Performance baselines](docs/performance-baselines.md)
+- [Performance round 2](docs/performance-round-2.md)
 - [Parallel execution recommendation](docs/parallel-execution-recommendation.md)
 - [Extraction inventory](docs/extraction-inventory.md)
 - [Behavior-to-test manifest](docs/behavior-test-manifest.md)

@@ -133,6 +133,45 @@ int registration_and_ordering() {
     if (active.mutation_generation() != generation_after_clear) {
         return 10;
     }
+
+    scene_polytree::motion::active_motion_update_workspace<int, int> batch_workspace;
+    const std::array batch_updates{
+        update{third_runtime, {3, 0}}, update{first_runtime, {1, 0}},
+        update{third_runtime, {9, 1}}, update{first_runtime, {}},
+        update{second_runtime, {4, 2}},
+    };
+    if (active.apply_updates(batch_updates, policy, batch_workspace) !=
+            scene_polytree::motion::motion_error::none ||
+        active.size() != 2 || active.records()[0].node != second_runtime ||
+        active.records()[0].state.linear_velocity != 4 ||
+        active.records()[1].node != third_runtime ||
+        active.records()[1].state.linear_velocity != 9) {
+        return 11;
+    }
+    const auto batch_generation = active.mutation_generation();
+    const std::array invalid_batch{
+        update{first_runtime, {7, 0}},
+        update{wz::core::graph::INVALID_NODE, {}},
+        update{second_runtime, {}},
+    };
+    if (active.apply_updates(invalid_batch, policy, batch_workspace) !=
+            scene_polytree::motion::motion_error::invalid_node ||
+        active.mutation_generation() != batch_generation || active.size() != 2 ||
+        active.records()[0].node != second_runtime || active.records()[1].node != third_runtime) {
+        return 12;
+    }
+    const std::array absent_deactivation{update{first_runtime, {}}};
+    if (active.apply_updates(absent_deactivation, policy, batch_workspace) !=
+            scene_polytree::motion::motion_error::none ||
+        active.mutation_generation() != batch_generation || active.size() != 2 ||
+        active.records()[0].node != second_runtime ||
+        active.records()[0].state.linear_velocity != 4 ||
+        active.records()[0].state.angular_velocity != 2 ||
+        active.records()[1].node != third_runtime ||
+        active.records()[1].state.linear_velocity != 9 ||
+        active.records()[1].state.angular_velocity != 1) {
+        return 13;
+    }
     return 0;
 }
 

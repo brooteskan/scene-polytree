@@ -70,7 +70,14 @@ SceneInstance::SceneInstance(RuntimeScene runtime, std::vector<RuntimeTankInstan
     : m_runtime(std::move(runtime)), m_tanks(std::move(tanks)),
       m_activeMotion(m_runtime.topology()), m_entityBindings(m_runtime.state().size()),
       m_readyTanks(m_tanks.size(), false), m_stepSequence(fixedStep),
-      m_maxCatchUpSteps(maxCatchUpSteps) {}
+      m_evaluatedStamp(m_runtime.state().size()), m_topologicalRank(m_runtime.state().size()),
+      m_maxCatchUpSteps(maxCatchUpSteps) {
+    m_evaluatedChanges.reserve(m_runtime.state().size());
+    const auto order = wz::core::graph::evaluation_plan(m_runtime.topology()).topological_order;
+    std::ranges::for_each(std::views::iota(std::size_t{}, order.size()), [&](std::size_t index) {
+        m_topologicalRank[order[index]] = static_cast<std::uint32_t>(index);
+    });
+}
 
 bool SceneInstance::MarkReady(AZ::u32 tankIndex) {
     if (tankIndex >= m_readyTanks.size()) {
@@ -243,6 +250,11 @@ void SceneInstance::Advance(std::chrono::nanoseconds frameDelta, const Transform
             m_runtime.topology(), m_runtime.state(), m_activeMotion, m_stepSequence,
             m_motionWorkspace, m_transformWorkspace, m_policy, m_policy);
         AZ_Error("ScenePolytree", result, "Failed to advance a scene-polytree fixed step.");
+        if (result) {
+            QueueEvaluated(result.changed_nodes);
+        } else {
+            m_directBatchValid = false;
+        }
     });
 
     m_accumulator -= fixedStep * stepCount;
@@ -276,25 +288,57 @@ bool SceneInstance::AllReady() const {
 }
 
 bool SceneInstance::HasDirtyTransforms() const {
-    return std::ranges::any_of(m_runtime.state().records(),
-                               [](const auto &record) { return record.dirty; });
+    return m_runtime.state().has_dirty_transforms();
 }
 
 void SceneInstance::EvaluateDirty() {
     auto plan = scene_polytree::make_transform_evaluation_plan(
         m_runtime.topology(), m_runtime.state(), m_transformWorkspace);
     if (!plan) {
+        m_directBatchValid = false;
         AZ_Error("ScenePolytree", false, "Failed to plan scene transform evaluation.");
         return;
     }
     const auto result = scene_polytree::evaluate_transforms(m_runtime.topology(), m_runtime.state(),
                                                             plan.value(), m_policy);
     AZ_Error("ScenePolytree", result, "Failed to evaluate scene transforms.");
+    if (result) {
+        QueueEvaluated(result.changed_nodes);
+    } else {
+        m_directBatchValid = false;
+    }
+}
+
+void SceneInstance::QueueEvaluated(
+    std::span<const wz::core::graph::NodeHandle> changed) {
+    std::ranges::for_each(changed, [&](wz::core::graph::NodeHandle node) {
+        if (m_evaluatedStamp[node] != m_evaluatedEpoch) {
+            m_evaluatedStamp[node] = m_evaluatedEpoch;
+            m_evaluatedChanges.push_back(node);
+        }
+    });
+}
+
+void SceneInstance::ResetEvaluatedBatch() {
+    m_evaluatedChanges.clear();
+    if (++m_evaluatedEpoch == 0) {
+        std::ranges::fill(m_evaluatedStamp, std::uint64_t{});
+        ++m_evaluatedEpoch;
+    }
+    m_directBatchValid = true;
 }
 
 void SceneInstance::Synchronize(const TransformWriter &writer) {
-    const auto changed = scene_polytree::changed_transform_nodes_since(
-        m_runtime.topology(), m_runtime.state(), m_lastSynchronizedRevision, m_changedScratch);
+    std::span<const wz::core::graph::NodeHandle> changed;
+    if (m_directBatchValid) {
+        std::ranges::sort(m_evaluatedChanges, {}, [&](wz::core::graph::NodeHandle node) {
+            return m_topologicalRank[node];
+        });
+        changed = m_evaluatedChanges;
+    } else {
+        changed = scene_polytree::changed_transform_nodes_since(
+            m_runtime.topology(), m_runtime.state(), m_lastSynchronizedRevision, m_changedScratch);
+    }
     std::ranges::for_each(changed, [&](wz::core::graph::NodeHandle node) {
         const EntityTarget &target = m_entityBindings[node];
         if (target.m_entity.IsValid()) {
@@ -303,6 +347,7 @@ void SceneInstance::Synchronize(const TransformWriter &writer) {
         }
     });
     m_lastSynchronizedRevision = m_runtime.state().revision();
+    ResetEvaluatedBatch();
 }
 
 wz::core::graph::NodeHandle SceneInstance::NodeForRole(AZ::u32 tankIndex, TankNodeRole role) const {

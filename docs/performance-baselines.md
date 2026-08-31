@@ -1,5 +1,10 @@
 # Performance baselines
 
+> This document records the pre-optimization issue #9 baseline and its budgets.
+> The issue #13 implementation, direct before/after measurements, allocation
+> checks, executor grain comparison, and budget disposition are published in
+> [Performance round 2](performance-round-2.md).
+
 ## Scope and method
 
 The issue #9 runner separates four costs:

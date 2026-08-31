@@ -17,6 +17,16 @@ target_link_libraries(
 
 add_test(NAME scene_polytree.transforms COMMAND scene_polytree_transform_tests)
 
+add_executable(scene_polytree_executor_tests executor_tests.cpp)
+target_link_libraries(
+    scene_polytree_executor_tests
+    PRIVATE
+        scene-polytree::core
+        scene-polytree::cpu-executor
+)
+
+add_test(NAME scene_polytree.executor COMMAND scene_polytree_executor_tests)
+
 add_executable(scene_polytree_motion_tests motion_tests.cpp)
 target_link_libraries(
     scene_polytree_motion_tests

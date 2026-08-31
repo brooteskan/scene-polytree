@@ -30,9 +30,34 @@ template <class Set, class Policy> struct motion_update_sink {
 };
 } // namespace detail
 
+template <class LinearVelocity, class AngularVelocity> class active_motion_update_workspace {
+  public:
+    using update_type = motion_update<LinearVelocity, AngularVelocity>;
+    using record_type = active_motion_record<LinearVelocity, AngularVelocity>;
+
+    [[nodiscard]] std::size_t scratch_capacity_bytes() const noexcept {
+        return m_updates.capacity() * sizeof(normalized_update) +
+               m_merged.capacity() * sizeof(record_type) +
+               m_stationary.capacity() * sizeof(std::uint8_t);
+    }
+
+  private:
+    template <class, class> friend class active_motion_set;
+
+    struct normalized_update {
+        update_type update;
+        std::size_t input_order{};
+    };
+
+    std::vector<normalized_update> m_updates;
+    std::vector<record_type> m_merged;
+    std::vector<std::uint8_t> m_stationary;
+};
+
 template <class LinearVelocity, class AngularVelocity> class active_motion_set {
   public:
     using state_type = motion_state<LinearVelocity, AngularVelocity>;
+    using update_type = motion_update<LinearVelocity, AngularVelocity>;
     using record_type = active_motion_record<LinearVelocity, AngularVelocity>;
 
     template <class N, class E>
@@ -114,6 +139,114 @@ template <class LinearVelocity, class AngularVelocity> class active_motion_set {
             updates, sink, [](const auto &update) -> const auto & { return update; });
         return status == wz::core::algo::next::execution_status::completed ? motion_error::none
                                                                            : sink.error;
+    }
+
+    template <std::ranges::forward_range Updates, class Policy>
+        requires MotionPolicy<Policy> &&
+                 std::same_as<typename Policy::linear_velocity_type, LinearVelocity> &&
+                 std::same_as<typename Policy::angular_velocity_type, AngularVelocity>
+    [[nodiscard]] motion_error
+    apply_updates(const Updates &updates, Policy &policy,
+                  active_motion_update_workspace<LinearVelocity, AngularVelocity> &workspace) {
+        const bool valid = std::ranges::all_of(
+            updates, [&](const auto &update) { return update.node < m_node_count; });
+        if (!valid) {
+            return motion_error::invalid_node;
+        }
+
+        auto &normalized = workspace.m_updates;
+        auto &merged = workspace.m_merged;
+        auto &stationary = workspace.m_stationary;
+        normalized.clear();
+        std::size_t input_order{};
+        std::ranges::for_each(updates, [&](const auto &update) {
+            normalized.push_back({update, input_order++});
+        });
+
+        // Descending input order inside each handle group puts the last input
+        // update first. The in-place sort avoids the temporary allocation that
+        // stable_sort is permitted to make.
+        std::ranges::sort(normalized, [](const auto &left, const auto &right) {
+            return left.update.node != right.update.node
+                       ? left.update.node < right.update.node
+                       : left.input_order > right.input_order;
+        });
+        const auto duplicates = std::ranges::unique(
+            normalized, {}, [](const auto &entry) { return entry.update.node; });
+        normalized.erase(duplicates.begin(), duplicates.end());
+        stationary.resize(normalized.size());
+        std::ranges::transform(normalized, stationary.begin(), [&](const auto &entry) {
+            return static_cast<std::uint8_t>(policy.is_stationary(entry.update.state));
+        });
+
+        std::size_t final_size{};
+        std::size_t count_existing{};
+        std::size_t count_updates{};
+        const auto count_pending = std::views::iota(std::size_t{}) |
+                                   std::views::take_while([&](std::size_t) {
+                                       return count_existing < m_records.size() ||
+                                              count_updates < normalized.size();
+                                   });
+        std::ranges::for_each(count_pending, [&](std::size_t) {
+            const bool has_existing = count_existing < m_records.size();
+            const bool has_update = count_updates < normalized.size();
+            if (!has_update ||
+                (has_existing && m_records[count_existing].node <
+                                     normalized[count_updates].update.node)) {
+                ++count_existing;
+                ++final_size;
+                return;
+            }
+            const auto &update = normalized[count_updates].update;
+            const bool same_node =
+                has_existing && m_records[count_existing].node == update.node;
+            final_size += stationary[count_updates] != 0 ? 0u : 1u;
+            count_existing += same_node ? 1u : 0u;
+            ++count_updates;
+        });
+
+        merged.clear();
+        m_records.reserve(final_size);
+        merged.reserve(final_size);
+        std::size_t existing_index{};
+        std::size_t update_index{};
+        bool mutated{};
+        const auto pending = std::views::iota(std::size_t{}) |
+                             std::views::take_while([&](std::size_t) {
+                                 return existing_index < m_records.size() ||
+                                        update_index < normalized.size();
+                             });
+        std::ranges::for_each(pending, [&](std::size_t) {
+            const bool has_existing = existing_index < m_records.size();
+            const bool has_update = update_index < normalized.size();
+            if (!has_update ||
+                (has_existing && m_records[existing_index].node <
+                                     normalized[update_index].update.node)) {
+                merged.push_back(m_records[existing_index++]);
+                return;
+            }
+
+            const auto &update = normalized[update_index].update;
+            const bool same_node =
+                has_existing && m_records[existing_index].node == update.node;
+            const bool update_is_stationary = stationary[update_index] != 0;
+            if (!update_is_stationary) {
+                merged.push_back(record_type{update.node, update.state});
+            }
+            mutated = mutated || same_node || !update_is_stationary;
+            existing_index += same_node ? 1u : 0u;
+            ++update_index;
+        });
+
+        if (mutated) {
+            m_records.swap(merged);
+            ++m_mutation_generation;
+        } else {
+            // The merge only copied the existing set when every normalized update
+            // was an absent-node deactivation, so preserve record storage and spans.
+            merged.clear();
+        }
+        return motion_error::none;
     }
 
     void clear() noexcept {

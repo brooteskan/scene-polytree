@@ -23,17 +23,22 @@ database or creating a second entity/component system.
 ## Evaluation
 
 Transform dirty planning and propagation consume the static polytree's cached
-topological order. A plan scans that order once, derives descendant
-invalidation from parent state, and records only affected nodes for transform
-composition. Partial plans select complete dirty-root scopes; they cannot
-start beneath a pending dirty ancestor.
+topological order. Runtime state tracks directly dirty handles, while a
+workspace caches topological ranks and contiguous subtree ranges. A plan sorts
+that frontier, gives each affected subtree to its first dirty ancestor, and
+records only affected nodes for transform composition. Partial plans select
+complete dirty-root scopes; they cannot start beneath a pending dirty
+ancestor.
 
-Work that can execute in parallel consumes dependency levels. Motion is a
-separate extension over the same scene and ordering data: a sorted sparse set
-identifies moving nodes, a fixed-step policy integrates their local transforms,
-and the existing dirty planner propagates only the resulting affected
-subtrees. Procedural animation, Inochi puppet evaluation, and engine
-synchronization remain separate operations over that shared representation.
+Work that executes in parallel consumes cached dependency levels through the
+optional persistent CPU executor. Workers write disjoint world transforms;
+barriers separate levels and a serial commit publishes revisions and ordered
+results. Motion is a separate extension over the same scene and ordering data:
+a sorted sparse set identifies moving nodes, a fixed-step policy integrates
+their local transforms, and the existing dirty planner propagates only the
+resulting affected subtrees. Procedural animation, Inochi puppet evaluation,
+and engine synchronization remain separate operations over that shared
+representation.
 
 Scene operations select data and describe transformations. Generic operations
 own iteration, early termination, scheduling, and possible CPU, SIMD, task, or

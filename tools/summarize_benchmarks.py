@@ -36,6 +36,8 @@ def main() -> int:
             record["phase"],
             record["shape"],
             record["propagation_order"],
+            record.get("worker_count", 0),
+            record.get("task_grain", 0),
             record["node_count"],
             record["actor_count"],
             record["requested_ratio"],
@@ -52,8 +54,8 @@ def main() -> int:
         f"- Compiler: `{metadata.get('compiler')} {metadata.get('compiler_version')}`",
         f"- Build: `{metadata.get('build_config')}`",
         "",
-        "| Suite | Phase | Shape | Order | Nodes | Actors | Requested | Changed | Median ns | p95 ns | MAD ns | Allocations | Scratch bytes |",
-        "| --- | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+        "| Suite | Phase | Shape | Order | Workers | Grain | Nodes | Actors | Requested | Changed | Median ns | p95 ns | MAD ns | Allocations | Tasks | Dispatches | Scratch bytes |",
+        "| --- | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
     ]
     for key, rows in sorted(grouped.items()):
         walls = [float(row["wall_ns"]) for row in rows]
@@ -61,16 +63,22 @@ def main() -> int:
         mad = median([abs(value - center) for value in walls])
         representative = rows[0]
         lines.append(
-            "| {} | {} | {} | {} | {} | {} | {:.3g} | {:.3g} | {:.0f} | {:.0f} | {:.0f} | {:.0f} | {} |".format(
+            "| {} | {} | {} | {} | {} | {} | {} | {} | {:.3g} | {:.3g} | {:.0f} | {:.0f} | {:.0f} | {:.0f} | {:.0f} | {:.0f} | {} |".format(
                 *key[:4],
                 key[4],
                 key[5],
-                float(key[6]),
+                key[6],
+                key[7],
+                float(key[8]),
                 float(representative["actual_changed_ratio"]),
                 center,
                 percentile(walls, 0.95),
                 mad,
                 median([float(row["allocation_count"]) for row in rows]),
+                median([float(row.get("task_count", 0)) for row in rows]),
+                median(
+                    [float(row.get("parallel_dispatch_count", 0)) for row in rows]
+                ),
                 representative["scratch_bytes"],
             )
         )

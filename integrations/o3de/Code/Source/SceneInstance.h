@@ -12,7 +12,9 @@
 
 #include <array>
 #include <chrono>
+#include <cstdint>
 #include <memory>
+#include <span>
 #include <vector>
 
 namespace ScenePolytree::Internal {
@@ -77,6 +79,8 @@ class SceneInstance final {
     [[nodiscard]] bool BindWithOffsets(AZ::u32 tankIndex, const TankEntityBindings &bindings,
                                        const std::array<AZ::Transform, 3> &nodeToTargets);
     void EvaluateDirty();
+    void QueueEvaluated(std::span<const wz::core::graph::NodeHandle> changed);
+    void ResetEvaluatedBatch();
     void Synchronize(const TransformWriter &writer);
     [[nodiscard]] wz::core::graph::NodeHandle NodeForRole(AZ::u32 tankIndex,
                                                           TankNodeRole role) const;
@@ -91,10 +95,15 @@ class SceneInstance final {
     scene_polytree::transform_evaluation_workspace m_transformWorkspace;
     AzTransformPolicy m_policy;
     std::vector<wz::core::graph::NodeHandle> m_changedScratch;
+    std::vector<wz::core::graph::NodeHandle> m_evaluatedChanges;
+    std::vector<std::uint64_t> m_evaluatedStamp;
+    std::vector<std::uint32_t> m_topologicalRank;
     std::chrono::nanoseconds m_accumulator{};
     scene_polytree::scene_revision m_lastSynchronizedRevision{};
     AZ::u32 m_maxCatchUpSteps{4};
     AZ::u32 m_lastSynchronizedNodeCount{};
+    std::uint64_t m_evaluatedEpoch{1};
+    bool m_directBatchValid{true};
     bool m_active{};
 };
 } // namespace ScenePolytree::Internal

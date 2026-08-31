@@ -77,6 +77,19 @@ target_include_directories(
 )
 target_link_libraries(scene_polytree_motion INTERFACE scene-polytree::core)
 
+find_package(Threads REQUIRED)
+add_library(scene_polytree_cpu_executor STATIC src/cpu_task_executor.cpp)
+add_library(scene-polytree::cpu-executor ALIAS scene_polytree_cpu_executor)
+set_target_properties(scene_polytree_cpu_executor PROPERTIES EXPORT_NAME cpu-executor)
+target_compile_features(scene_polytree_cpu_executor PUBLIC cxx_std_20)
+target_include_directories(
+    scene_polytree_cpu_executor
+    PUBLIC
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+        $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
+)
+target_link_libraries(scene_polytree_cpu_executor PUBLIC Threads::Threads)
+
 if(SCENE_POLYTREE_BUILD_TESTS)
     enable_testing()
 endif()
@@ -98,7 +111,7 @@ if(SCENE_POLYTREE_BUILD_TESTS)
 endif()
 
 install(
-    TARGETS scene_polytree scene_polytree_motion
+    TARGETS scene_polytree scene_polytree_motion scene_polytree_cpu_executor
     EXPORT scene-polytree-targets
 )
 install(DIRECTORY include/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})

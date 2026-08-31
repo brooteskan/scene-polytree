@@ -18,7 +18,9 @@ repository's `scene-polytree::motion` target. Generic repository builds do not l
 - Each scene uses a fixed 60 Hz step, bounded four-step catch-up, and tick order
   `AZ::TICK_GAME + 1`.
 - Player and AI adapters submit the same `TankIntent` and never subscribe to TickBus.
-- Only nodes returned by `changed_transform_nodes_since` are written with `SetWorldTM`.
+- Same-tick evaluations accumulate their ordered `changed_nodes` batches and synchronize that
+  union directly with `SetWorldTM`, avoiding a second topology scan. If direct-batch lifetime is
+  lost after an error, `changed_transform_nodes_since` remains the revision-token fallback.
 - Hull, turret, and gun entities are detached before spawn insertion, so O3DE has no competing
   parent hierarchy. Authored turret and gun pivot markers are detached and sampled once during
   binding; only the three visual targets are projected afterward.

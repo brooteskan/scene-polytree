@@ -1,11 +1,22 @@
 # Parallel execution recommendation
 
-## Recommendation
+## Implemented recommendation
 
-Prototype dependency-level CPU tasks for large, wide transform-composition
-batches. Do not prototype GPU execution yet. Before parallelizing sparse frame
-updates, remove the unconditional full-scene planning and synchronization
-scans and add batch active-set maintenance.
+Use dependency-level CPU tasks for large, wide transform-composition batches.
+Do not prototype GPU execution yet. The prerequisite incremental planning,
+direct same-frame synchronization, and batch active-set maintenance paths are
+implemented alongside the executor.
+
+`cpu_task_executor` owns persistent workers (by default up to 15 workers plus
+the caller on the 16-thread reference machine). The transform overload taking
+an executor uses cached dependency levels, defaults to a 2,048-node grain,
+keeps narrow or sub-grain work sequential, places a barrier between levels,
+and performs a deterministic serial revision/result commit. Callers may tune
+the grain through `transform_execution_options`. The executor and transform
+workspace are externally synchronized, non-reentrant objects.
+
+The measured multi-grain results and before/after comparisons are in
+[Performance round 2](performance-round-2.md).
 
 This order follows the measured bottlenecks:
 
@@ -37,14 +48,14 @@ task should carry at least four times its dispatch overhead in useful work.
 | 10 us | 1,493 nodes | 938 nodes |
 | 25 us | 3,731 nodes | 2,345 nodes |
 
-Use 2,048 changed nodes as the initial minimum batch size for a task prototype
-and make it configurable. At 100,000 nodes this yields about 48 wide batches or
+Use 2,048 changed nodes as the default minimum batch size and keep it
+configurable. At 100,000 nodes this yields about 48 wide batches or
 32 batches in the widest balanced level, enough to exercise the 16 hardware
 threads while remaining above a 10 us dispatch assumption. Do not create tasks
 for a chain level, a level below the grain, or a complete operation below about
 40 us of measured sequential work.
 
-The prototype must consume cached dependency levels and one immutable affected
+The executor consumes cached dependency levels and one immutable affected
 mask. It must preserve parent-before-child level barriers, stable result
 ordering, one world revision per logical batch, stale-plan validation, and the
 existing externally synchronized mutation boundary. Parallel workers should
@@ -53,23 +64,21 @@ materialization remain a deterministic serial commit.
 
 ## Planning and synchronization before more threads
 
-For sparse workloads, first prototype an explicit dirty-root/active-subtree
-frontier that can produce the affected mask without scanning clean nodes. The
+For sparse workloads, the explicit direct-dirty/active-subtree frontier
+produces the affected mask without scanning clean nodes. The
 frontier must be invalidated or remapped at freeze and reparent boundaries and
 must retain the current rule that a dirty ancestor owns its affected subtree.
 
-Similarly, expose the already ordered changed batch from evaluation directly
+The already ordered changed batch from evaluation is exposed directly
 to same-frame synchronization where lifetime permits. Keep
 `changed_transform_nodes_since` as the revision-token fallback. This avoids a
 second full topology scan without changing the meaning of revision-based
 queries.
 
-Active motion needs a sort-and-merge batch update operation. Validate all
-handles first, stable-sort or require sorted updates, coalesce repeated node
-updates with last-write-wins semantics, and merge once with the current sorted
-records. The operation must preserve deterministic `NodeHandle` order and
-all-or-nothing validation. Parallelizing individual vector insertions or
-erasures would retain the measured quadratic movement cost and add contention.
+Active motion provides a sort-and-merge batch update operation. It validates
+all handles first, sorts updates, coalesces repeated nodes with last-write-wins
+semantics, and merges once with the current sorted records. It preserves
+deterministic `NodeHandle` order and all-or-nothing validation.
 
 ## SIMD and data layout
 
@@ -106,16 +115,12 @@ and readback is limited to a compact changed/result set. A future experiment
 must separately measure upload, dispatch, barriers, readback, and engine
 synchronization; CPU kernel time alone is not a GPU business case.
 
-## Prototype order
+## Follow-up order
 
-1. Batch sort-and-merge active-set updates and measure unordered lifecycle
-   workloads again.
-2. Add an incremental affected frontier and direct evaluated-batch
-   synchronization path.
-3. Prototype dependency-level CPU tasks with a 2,048-node initial grain and a
-   deterministic serial commit.
-4. Evaluate an optional structure-of-arrays/SIMD policy on the same fixtures.
-5. Revisit GPU execution only if the residency and sustained-work criteria are
+1. Keep the batch, frontier, direct synchronization, and CPU executor paths in
+   the benchmark regression set.
+2. Evaluate an optional structure-of-arrays/SIMD policy on the same fixtures.
+3. Revisit GPU execution only if the residency and sustained-work criteria are
    demonstrated.
 
 Every prototype remains subject to the repository's no-handwritten-loop

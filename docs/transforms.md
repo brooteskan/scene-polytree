@@ -38,7 +38,10 @@ dirty. The incremental overload accepts the previous runtime snapshot and
 remaps by stable identity. It preserves a world value only when the node
 survives, its local revision is unchanged, and its stable parent identity is
 unchanged. New nodes and nodes whose parent changed become dirty. Descendant
-invalidation is derived later, so reparenting does not walk the subtree.
+invalidation is derived later, so reparenting does not walk the subtree. The
+new runtime state reconstructs its direct-dirty frontier from the remapped
+records, so no frontier handle survives a freeze boundary and a reparented node
+owns its affected subtree in the next plan.
 
 Runtime-only local edits belong to that runtime snapshot. A later incremental
 freeze treats authoring local state as authoritative.
@@ -46,17 +49,29 @@ freeze treats authoring local state as authoritative.
 ## Dirty selection and evaluation
 
 `make_transform_evaluation_plan` consumes the immutable polytree's cached
-topological order. For each node it computes:
+topological order. Runtime state maintains an exact frontier of directly dirty
+nodes. The workspace caches topological ranks, subtree ranges, subtree sizes,
+and dependency levels for one topology. This metadata is built in `O(N)` on
+the first plan for that topology and reused afterward.
+
+Planning sorts the `D` direct-dirty candidates by topological rank, discards
+any candidate already owned by an earlier dirty ancestor, and appends that
+owner's cached contiguous subtree. It preserves the rule:
 
 ```text
 affected(node) = directly_dirty(node) OR affected(parent(node))
 ```
 
 An affected node with an unaffected parent is a dirty root. The plan exposes
-dirty roots and affected nodes in cached topological order. Planning scans all
-nodes in `O(N)` time; transform composition is performed for only the `K`
-affected nodes. The reusable workspace owns `O(N)` scratch and retains its
-capacity between calls.
+dirty roots and affected nodes in cached topological order. After metadata is
+warm, a clean plan is `O(1)` and a normal dirty plan is
+`O(D log D + K)` worst-case, or `O(D + K)` when edits already arrive in
+topological order, where `K` is the affected-node count. A conservative `O(N)`
+fallback remains for a foreign polytree whose cached topological order does not
+store subtrees contiguously. The reusable workspace owns `O(N)` metadata plus
+result scratch, and runtime state retains up to `O(N)` handles for its direct
+frontier. Both retain capacity between calls; repeated plans within capacity
+allocate zero bytes.
 
 `evaluate_transforms` copies local to world for roots and invokes the policy
 for other affected nodes. It clears direct dirty state and gives every node in
@@ -66,7 +81,27 @@ not numerical inequality.
 
 `changed_transform_nodes_since` filters cached topological order by
 `world_revision > token`. Its returned span borrows the caller's scratch
-vector.
+vector. Same-frame consumers should instead use the ordered `changed_nodes`
+span returned by evaluation while its workspace lifetime is still valid. This
+avoids a second full-topology scan. Revision-token selection remains the
+fallback for delayed or independently scheduled synchronization.
+
+## Dependency-level CPU execution
+
+The overload accepting `cpu_task_executor` executes independent nodes within
+cached dependency levels. The executor owns a persistent worker pool and uses
+a configurable `transform_execution_options::minimum_task_grain`, which
+defaults to 2,048 changed nodes. A complete operation below the grain, levels
+below the grain, chains, and an executor with no workers stay on the caller
+thread.
+
+The affected generation mask and packed level batches are immutable while
+workers run. Workers compose disjoint world records, each dependency level is
+a parent-before-child barrier, and world revisions, dirty flags, and the
+ordered result are published afterward in a deterministic serial commit. The
+parallel result is exactly the same topological `changed_nodes` order and uses
+the same single world revision as the sequential evaluator. Workspace and
+executor capacity are reusable; steady-state dispatch does not allocate.
 
 ## Partial evaluation
 
@@ -103,5 +138,7 @@ Static polytree topology and completed transform records may be read
 concurrently when their owners remain alive. Authoring mutation, planning into
 a workspace, runtime local edits, and evaluation require external exclusive
 synchronization. One workspace may not be shared by simultaneous planners.
-Dependency-level views remain available for a future executor, but the core
-Phase 5 evaluator is deterministic and sequential.
+One `cpu_task_executor` may not be used reentrantly. The parallel overload calls
+`TransformPolicy::compose` concurrently, so the supplied policy must either be
+stateless or synchronize any shared mutable state. The sequential overload
+remains available for policies that do not meet that requirement.

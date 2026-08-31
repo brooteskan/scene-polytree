@@ -151,8 +151,7 @@ template <class N, class E, class Transform, class LinearVelocity, class Angular
         return {motion_error::invalid_node, transform_error::none, {}, {}, step, state.revision()};
     }
 
-    const bool existing_dirty =
-        std::ranges::any_of(state.records(), [](const auto &record) { return record.dirty; });
+    const bool existing_dirty = state.has_dirty_transforms();
     const bool needs_world_revision = existing_dirty || !active.empty();
     const auto remaining = std::numeric_limits<scene_revision>::max() - state.revision();
     if (active.size() > remaining ||
