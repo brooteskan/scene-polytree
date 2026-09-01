@@ -3,6 +3,8 @@
 #include <AzCore/Component/Entity.h>
 #include <AzCore/Component/TickBus.h>
 #include <AzCore/Interface/Interface.h>
+#include <AzCore/Serialization/SerializeContext.h>
+#include <AzCore/std/smart_ptr/make_shared.h>
 #include <AzFramework/Components/TransformComponent.h>
 #include <AzFramework/Spawnable/SpawnableEntitiesInterface.h>
 #include <AzTest/AzTest.h>
@@ -15,6 +17,46 @@ namespace ScenePolytree::Tests {
 namespace {
 using ::testing::_;
 using ::testing::Return;
+
+class SpawnerTestControllerConfiguration final : public ScenePolytreeControllerConfiguration {
+  public:
+    AZ_RTTI(SpawnerTestControllerConfiguration, "{6DB7D0B8-0BBB-4CD7-9807-AEF183B0AA80}",
+            ScenePolytreeControllerConfiguration);
+
+    [[nodiscard]] AZStd::shared_ptr<const ScenePolytreeControllerConfiguration>
+    Clone() const override {
+        return AZStd::make_shared<SpawnerTestControllerConfiguration>(*this);
+    }
+};
+
+class RuntimeBehaviorProvider final : public AZ::Component, public ScenePolytreeBehaviorProvider {
+  public:
+    AZ_COMPONENT(RuntimeBehaviorProvider, "{DC024E78-B65A-4E5A-8890-7140A27DCD7F}",
+                 ScenePolytreeBehaviorProvider);
+
+    static void Reflect(AZ::ReflectContext *context) {
+        if (auto *serialize = azrtti_cast<AZ::SerializeContext *>(context)) {
+            serialize->Class<RuntimeBehaviorProvider, AZ::Component>()->Version(1)->Field(
+                "Target", &RuntimeBehaviorProvider::m_target);
+        }
+    }
+
+    void Activate() override {}
+    void Deactivate() override {}
+
+    [[nodiscard]] ScenePolytreeControllerDeclaration
+    CopyScenePolytreeControllerDeclaration() const override {
+        ScenePolytreeControllerDeclaration declaration;
+        declaration.m_declarationId = AZ::Name("RuntimeBehavior");
+        declaration.m_typeId = AZ::TypeId("{8D57C3A6-F2E2-45BB-84D4-ECC9E9EFD18B}");
+        declaration.m_configuration = AZStd::make_shared<SpawnerTestControllerConfiguration>();
+        declaration.m_targets.push_back({AZ::Name("Rotor"), m_target, AZ::Name{},
+                                         ScenePolytreeControllerTargetAccess::ReadWrite});
+        return declaration;
+    }
+
+    AZ::EntityId m_target;
+};
 
 [[nodiscard]] AZ::Data::Asset<AzFramework::Spawnable> MakeSpawnerPrefab(AZ::u32 subId = 1) {
     const AZ::Data::AssetId assetId(AZ::Uuid("{45AF110A-BE8F-47F9-9A1C-4BC981920F75}"), subId);
@@ -222,6 +264,74 @@ class FakeSceneRequests final : public ScenePolytreeRequests {
     AZ::u32 m_immediateReleaseCount{};
 };
 
+class FakeControllerLifecycleRequests final : public ScenePolytreeControllerLifecycleRequests {
+  public:
+    struct PendingCommand {
+        SceneCommandId m_id;
+        SceneCommandType m_type;
+        InstanceHandle m_instance;
+        AZStd::vector<ScenePolytreeControllerDeclaration> m_declarations;
+    };
+
+    FakeControllerLifecycleRequests() {
+        AZ::Interface<ScenePolytreeControllerLifecycleRequests>::Register(this);
+    }
+    ~FakeControllerLifecycleRequests() override {
+        AZ::Interface<ScenePolytreeControllerLifecycleRequests>::Unregister(this);
+    }
+
+    [[nodiscard]] SceneCommandSubmission
+    SubmitAttachControllers(InstanceHandle instance,
+                            AZStd::vector<ScenePolytreeControllerDeclaration> declarations,
+                            AZ::EntityId) override {
+        const SceneCommandId command{m_nextCommand++};
+        m_pending.push_back(
+            {command, SceneCommandType::AttachControllers, instance, AZStd::move(declarations)});
+        return {ScenePolytreeResultCode::Success, command};
+    }
+
+    [[nodiscard]] SceneCommandSubmission SubmitDetachControllers(InstanceHandle instance,
+                                                                 AZ::EntityId) override {
+        (void)CloseControllerInput(instance);
+        const SceneCommandId command{m_nextCommand++};
+        m_pending.push_back({command, SceneCommandType::DetachControllers, instance, {}});
+        return {ScenePolytreeResultCode::Success, command};
+    }
+
+    ScenePolytreeControllerResultCode CloseControllerInput(InstanceHandle instance) override {
+        m_closed.push_back(instance);
+        return ScenePolytreeControllerResultCode::Success;
+    }
+
+    ScenePolytreeControllerResultCode
+    DestroyControllersImmediately(InstanceHandle instance) override {
+        m_destroyed.push_back(instance);
+        return ScenePolytreeControllerResultCode::Success;
+    }
+
+    [[nodiscard]] PendingCommand Take(SceneCommandType expected) {
+        EXPECT_FALSE(m_pending.empty());
+        if (m_pending.empty()) {
+            return {};
+        }
+        PendingCommand command = AZStd::move(m_pending.front());
+        m_pending.erase(m_pending.begin());
+        EXPECT_EQ(command.m_type, expected);
+        return command;
+    }
+
+    void Complete(ScenePolytreeSpawnerComponent &component, SceneCommandType expected,
+                  ScenePolytreeResultCode result = ScenePolytreeResultCode::Success) {
+        const PendingCommand command = Take(expected);
+        component.OnScenePolytreeCommandCompleted(command.m_id, command.m_type, result);
+    }
+
+    AZ::u64 m_nextCommand{10'000};
+    AZStd::vector<PendingCommand> m_pending;
+    AZStd::vector<InstanceHandle> m_closed;
+    AZStd::vector<InstanceHandle> m_destroyed;
+};
+
 struct SpawnSuccess {
     SpawnRequestId m_request;
     InstanceHandle m_instance;
@@ -338,10 +448,15 @@ class RuntimeEntity final : public AZ::Entity {
 
 class RuntimePrefabInstance final {
   public:
-    RuntimePrefabInstance(bool includeChild = true, bool attachTransformParent = true) {
+    RuntimePrefabInstance(bool includeChild = true, bool attachTransformParent = true,
+                          bool includeBehavior = false) {
         auto root = AZStd::make_unique<RuntimeEntity>(AZ::EntityId(11001), "Root");
         auto *rootTransform = root->CreateComponent<AzFramework::TransformComponent>();
         rootTransform->SetLocalTM(AZ::Transform::CreateTranslation(AZ::Vector3(1.0f, 0.0f, 0.0f)));
+        if (includeBehavior) {
+            auto *provider = root->CreateComponent<RuntimeBehaviorProvider>();
+            provider->m_target = AZ::EntityId(11002);
+        }
         m_entities.push_back(AZStd::move(root));
 
         if (includeChild) {
@@ -413,6 +528,7 @@ class SpawnerServices final {
 
     FakeRegistrationRequests m_registry;
     FakeSceneRequests m_scene;
+    FakeControllerLifecycleRequests m_controllers;
     AzFramework::NiceSpawnableEntitiesInterfaceMock m_spawnables;
 };
 
@@ -639,6 +755,109 @@ TEST(ScenePolytreeSpawnerComponentTests,
     const SlotHandle reusedSlot = services.m_scene.m_pending.front().m_slot;
     EXPECT_EQ(reusedSlot.m_slot, instance.m_slot.m_slot);
     EXPECT_NE(reusedSlot.m_generation, instance.m_slot.m_generation);
+}
+
+TEST(ScenePolytreeSpawnerComponentTests,
+     ControllerConstructionGatesSpawnSuccessAndDetachCompletesBeforeUnbind) {
+    SpawnerServices services;
+    SpawnerHarness spawner(12451, MakeConfig());
+    CapturingSpawnerNotifications notifications(spawner.Id());
+    spawner.Activate();
+    MakeReady(spawner, services.m_registry);
+
+    AZStd::unique_ptr<AzFramework::SpawnAllEntitiesOptionalArgs> spawnArguments;
+    EXPECT_CALL(services.m_spawnables, SpawnAllEntities(_, _))
+        .WillOnce([&](AzFramework::EntitySpawnTicket &,
+                      AzFramework::SpawnAllEntitiesOptionalArgs arguments) {
+            spawnArguments = AZStd::make_unique<AzFramework::SpawnAllEntitiesOptionalArgs>(
+                AZStd::move(arguments));
+        });
+    const SpawnRequestId spawnRequest = spawner.m_component->Spawn(DefaultSpawnRequest());
+    services.m_scene.Complete(*spawner.m_component, SceneCommandType::ResetSlot);
+    services.m_scene.Complete(*spawner.m_component, SceneCommandType::PlaceSlot);
+    ASSERT_NE(spawnArguments, nullptr);
+    RuntimePrefabInstance runtime(true, true, true);
+    runtime.PreInsert(701, *spawnArguments);
+    runtime.Complete(701, *spawnArguments);
+    AZ::TickBus::ExecuteQueuedEvents();
+
+    services.m_scene.Complete(*spawner.m_component, SceneCommandType::BindSlot);
+    EXPECT_TRUE(notifications.m_spawnSuccesses.empty());
+    const auto attach = services.m_controllers.Take(SceneCommandType::AttachControllers);
+    ASSERT_EQ(attach.m_declarations.size(), 1);
+    EXPECT_EQ(attach.m_declarations.front().m_providerBindingId, AZ::Name("Root"));
+    ASSERT_EQ(attach.m_declarations.front().m_targets.size(), 1);
+    EXPECT_EQ(attach.m_declarations.front().m_targets.front().m_slot, AZ::Name("Rotor"));
+    EXPECT_EQ(attach.m_declarations.front().m_targets.front().m_prefabEntity, AZ::EntityId(11002));
+    spawner.m_component->OnScenePolytreeCommandCompleted(attach.m_id, attach.m_type,
+                                                         ScenePolytreeResultCode::Success);
+    ASSERT_EQ(notifications.m_spawnSuccesses.size(), 1);
+    EXPECT_EQ(notifications.m_spawnSuccesses.front().m_request, spawnRequest);
+    const InstanceHandle instance = notifications.m_spawnSuccesses.front().m_instance;
+
+    EXPECT_CALL(services.m_spawnables, DespawnAllEntities(_, _))
+        .WillOnce([](AzFramework::EntitySpawnTicket &ticket,
+                     AzFramework::DespawnAllEntitiesOptionalArgs arguments) {
+            arguments.m_completionCallback(ticket.GetId());
+        });
+    const DespawnRequestId despawnRequest = spawner.m_component->Despawn(instance);
+    ASSERT_EQ(services.m_controllers.m_closed.size(), 1);
+    EXPECT_EQ(services.m_controllers.m_closed.front(), instance);
+    EXPECT_TRUE(services.m_scene.m_pending.empty());
+    services.m_controllers.Complete(*spawner.m_component, SceneCommandType::DetachControllers);
+    services.m_scene.Complete(*spawner.m_component, SceneCommandType::UnbindSlot);
+    AZ::TickBus::ExecuteQueuedEvents();
+    services.m_scene.Complete(*spawner.m_component, SceneCommandType::ResetSlot);
+    services.m_scene.Complete(*spawner.m_component, SceneCommandType::ReleaseSlot);
+    ASSERT_EQ(notifications.m_despawnSuccesses.size(), 1);
+    EXPECT_EQ(notifications.m_despawnSuccesses.front().m_request, despawnRequest);
+}
+
+TEST(ScenePolytreeSpawnerComponentTests,
+     ControllerAttachFailureIsTypedAndPerformsCompleteSpawnCleanup) {
+    SpawnerServices services;
+    SpawnerHarness spawner(12452, MakeConfig());
+    CapturingSpawnerNotifications notifications(spawner.Id());
+    spawner.Activate();
+    MakeReady(spawner, services.m_registry);
+
+    AZStd::unique_ptr<AzFramework::SpawnAllEntitiesOptionalArgs> spawnArguments;
+    EXPECT_CALL(services.m_spawnables, SpawnAllEntities(_, _))
+        .WillOnce([&](AzFramework::EntitySpawnTicket &,
+                      AzFramework::SpawnAllEntitiesOptionalArgs arguments) {
+            spawnArguments = AZStd::make_unique<AzFramework::SpawnAllEntitiesOptionalArgs>(
+                AZStd::move(arguments));
+        });
+    const SpawnRequestId spawnRequest = spawner.m_component->Spawn(DefaultSpawnRequest());
+    services.m_scene.Complete(*spawner.m_component, SceneCommandType::ResetSlot);
+    services.m_scene.Complete(*spawner.m_component, SceneCommandType::PlaceSlot);
+    ASSERT_NE(spawnArguments, nullptr);
+    RuntimePrefabInstance runtime(true, true, true);
+    runtime.PreInsert(701, *spawnArguments);
+    runtime.Complete(701, *spawnArguments);
+    AZ::TickBus::ExecuteQueuedEvents();
+    services.m_scene.Complete(*spawner.m_component, SceneCommandType::BindSlot);
+
+    EXPECT_CALL(services.m_spawnables, DespawnAllEntities(_, _))
+        .WillOnce([](AzFramework::EntitySpawnTicket &ticket,
+                     AzFramework::DespawnAllEntitiesOptionalArgs arguments) {
+            arguments.m_completionCallback(ticket.GetId());
+        });
+    services.m_controllers.Complete(*spawner.m_component, SceneCommandType::AttachControllers,
+                                    ScenePolytreeResultCode::ControllerFactoryNotFound);
+    services.m_scene.Complete(*spawner.m_component, SceneCommandType::UnbindSlot);
+    AZ::TickBus::ExecuteQueuedEvents();
+    services.m_scene.Complete(*spawner.m_component, SceneCommandType::ResetSlot);
+    services.m_scene.Complete(*spawner.m_component, SceneCommandType::ReleaseSlot);
+    AZ::TickBus::ExecuteQueuedEvents();
+
+    ASSERT_EQ(notifications.m_spawnFailures.size(), 1);
+    EXPECT_EQ(notifications.m_spawnFailures.front().m_request, spawnRequest);
+    EXPECT_EQ(notifications.m_spawnFailures.front().m_failure.m_error,
+              SpawnError::ControllerFactoryNotFound);
+    EXPECT_EQ(notifications.m_spawnFailures.front().m_failure.m_sceneResult,
+              ScenePolytreeResultCode::ControllerFactoryNotFound);
+    EXPECT_EQ(services.m_scene.ReservedCount(), 0);
 }
 
 TEST(ScenePolytreeSpawnerComponentTests, DeclaresSpawnerAndTransformServices) {

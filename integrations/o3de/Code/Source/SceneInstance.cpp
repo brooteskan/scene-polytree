@@ -2,13 +2,104 @@
 
 #include <AzCore/Casting/numeric_cast.h>
 #include <AzCore/Debug/Trace.h>
+#include <AzCore/std/string/string.h>
 
 #include <algorithm>
 #include <optional>
 #include <ranges>
 
+namespace ScenePolytree {
+namespace Internal {
+class ControllerCommandSinkAccess final {
+  public:
+    static void Bind(ScenePolytreeControllerCommandSink &sink, SceneInstance &runtime,
+                     AZ::u64 epoch) {
+        sink.m_runtime = &runtime;
+        sink.m_epoch = epoch;
+    }
+
+    static void Clear(ScenePolytreeControllerCommandSink &sink) {
+        sink.m_runtime = nullptr;
+        sink.m_epoch = 0;
+    }
+
+    [[nodiscard]] static ScenePolytreeControllerResultCode
+    SetLocal(ScenePolytreeControllerCommandSink &sink, ScenePolytreeControllerTargetToken target,
+             const AZ::Transform &local) {
+        auto *runtime = static_cast<SceneInstance *>(sink.m_runtime);
+        return runtime != nullptr ? runtime->SetControllerLocal(target, sink.m_epoch, local)
+                                  : ScenePolytreeControllerResultCode::StaleHandle;
+    }
+
+    [[nodiscard]] static ScenePolytreeControllerResultCode
+    SetVelocity(ScenePolytreeControllerCommandSink &sink, ScenePolytreeControllerTargetToken target,
+                const AZ::Vector3 &linear, const AZ::Vector3 &angular) {
+        auto *runtime = static_cast<SceneInstance *>(sink.m_runtime);
+        return runtime != nullptr
+                   ? runtime->SetControllerVelocity(target, sink.m_epoch, linear, angular)
+                   : ScenePolytreeControllerResultCode::StaleHandle;
+    }
+
+    [[nodiscard]] static ScenePolytreeControllerResultCode
+    GetLocal(const ScenePolytreeControllerCommandSink &sink,
+             ScenePolytreeControllerTargetToken target, AZ::Transform &local) {
+        const auto *runtime = static_cast<const SceneInstance *>(sink.m_runtime);
+        return runtime != nullptr ? runtime->GetControllerLocal(target, sink.m_epoch, local)
+                                  : ScenePolytreeControllerResultCode::StaleHandle;
+    }
+};
+} // namespace Internal
+
+ScenePolytreeControllerResultCode
+ScenePolytreeControllerCommandSink::SetLocalTransform(ScenePolytreeControllerTargetToken target,
+                                                      const AZ::Transform &local) {
+    return Internal::ControllerCommandSinkAccess::SetLocal(*this, target, local);
+}
+
+ScenePolytreeControllerResultCode
+ScenePolytreeControllerCommandSink::SetVelocity(ScenePolytreeControllerTargetToken target,
+                                                const AZ::Vector3 &linear,
+                                                const AZ::Vector3 &angular) {
+    return Internal::ControllerCommandSinkAccess::SetVelocity(*this, target, linear, angular);
+}
+
+ScenePolytreeControllerResultCode
+ScenePolytreeControllerCommandSink::StopMotion(ScenePolytreeControllerTargetToken target) {
+    return Internal::ControllerCommandSinkAccess::SetVelocity(
+        *this, target, AZ::Vector3::CreateZero(), AZ::Vector3::CreateZero());
+}
+
+ScenePolytreeControllerResultCode
+ScenePolytreeControllerCommandSink::GetLocalTransform(ScenePolytreeControllerTargetToken target,
+                                                      AZ::Transform &local) const {
+    return Internal::ControllerCommandSinkAccess::GetLocal(*this, target, local);
+}
+} // namespace ScenePolytree
+
 namespace ScenePolytree::Internal {
 namespace {
+[[nodiscard]] ScenePolytreeResultCode MapControllerResult(ScenePolytreeControllerResultCode code) {
+    switch (code) {
+    case ScenePolytreeControllerResultCode::Success:
+        return ScenePolytreeResultCode::Success;
+    case ScenePolytreeControllerResultCode::FactoryNotFound:
+        return ScenePolytreeResultCode::ControllerFactoryNotFound;
+    case ScenePolytreeControllerResultCode::InvalidConfiguration:
+        return ScenePolytreeResultCode::ControllerInvalidConfiguration;
+    case ScenePolytreeControllerResultCode::InvalidTarget:
+        return ScenePolytreeResultCode::ControllerTargetNotFound;
+    case ScenePolytreeControllerResultCode::ConstructionFailed:
+        return ScenePolytreeResultCode::ControllerConstructionFailed;
+    default:
+        return ScenePolytreeResultCode::ControllerConstructionFailed;
+    }
+}
+
+[[nodiscard]] bool TypeIdLess(ScenePolytreeControllerTypeId left,
+                              ScenePolytreeControllerTypeId right) {
+    return left.ToString<AZStd::string>() < right.ToString<AZStd::string>();
+}
+
 [[nodiscard]] std::optional<StableSlot>
 InstantiateTopology(SceneInstance::AuthoringScene &scene,
                     const AZStd::vector<ScenePolytreeNodeDescriptor> &nodes) {
@@ -120,8 +211,9 @@ SceneInstance::SceneInstance(RuntimeScene runtime, AZStd::vector<RuntimePartitio
                              std::chrono::nanoseconds fixedStep, AZ::u32 maxCatchUpSteps)
     : m_runtime(std::move(runtime)), m_partitions(AZStd::move(partitions)),
       m_activeMotion(m_runtime.topology()), m_entityBindings(m_runtime.state().size()),
-      m_stepSequence(fixedStep), m_evaluatedStamp(m_runtime.state().size()),
-      m_topologicalRank(m_runtime.state().size()), m_maxCatchUpSteps(maxCatchUpSteps) {
+      m_controllerWriteOwners(m_runtime.state().size()), m_stepSequence(fixedStep),
+      m_evaluatedStamp(m_runtime.state().size()), m_topologicalRank(m_runtime.state().size()),
+      m_maxCatchUpSteps(maxCatchUpSteps) {
     m_evaluatedChanges.reserve(m_runtime.state().size());
     const auto order = wz::core::graph::evaluation_plan(m_runtime.topology()).topological_order;
     std::ranges::for_each(std::views::iota(std::size_t{}, order.size()), [&](std::size_t index) {
@@ -217,6 +309,7 @@ SceneInstance::BindSlot(SlotHandle slot,
         const auto node = std::ranges::find(runtimeSlot->m_nodes, binding.m_bindingId,
                                             &RuntimeNodeBinding::m_bindingId);
         m_entityBindings[node->m_node] = {binding.m_entity, binding.m_nodeToEntity};
+        m_entityToNode.emplace(binding.m_entity, node->m_node);
         (void)m_runtime.state().mark_dirty(node->m_node);
     });
     m_active = true;
@@ -228,7 +321,11 @@ ScenePolytreeResultCode SceneInstance::UnbindSlot(SlotHandle slot) {
     if (runtimeSlot == nullptr) {
         return ScenePolytreeResultCode::StaleHandle;
     }
+    if (HasControllers(slot)) {
+        return ScenePolytreeResultCode::ControllersActive;
+    }
     std::ranges::for_each(runtimeSlot->m_nodes, [&](const RuntimeNodeBinding &node) {
+        m_entityToNode.erase(m_entityBindings[node.m_node].m_entity);
         m_entityBindings[node.m_node] = EntityTarget{};
     });
     return ScenePolytreeResultCode::Success;
@@ -239,6 +336,9 @@ ScenePolytreeResultCode SceneInstance::ResetSlot(SlotHandle slot) {
     if (runtimeSlot == nullptr) {
         return ScenePolytreeResultCode::StaleHandle;
     }
+    if (HasControllers(slot)) {
+        return ScenePolytreeResultCode::ControllersActive;
+    }
     ClearSlot(*runtimeSlot);
     return ScenePolytreeResultCode::Success;
 }
@@ -247,6 +347,9 @@ ScenePolytreeResultCode SceneInstance::ReleaseSlot(SlotHandle slot) {
     RuntimeSlot *runtimeSlot = FindSlot(slot);
     if (runtimeSlot == nullptr) {
         return ScenePolytreeResultCode::StaleHandle;
+    }
+    if (HasControllers(slot)) {
+        return ScenePolytreeResultCode::ControllersActive;
     }
     ClearSlot(*runtimeSlot);
     runtimeSlot->m_reserved = false;
@@ -267,6 +370,304 @@ NodeResult SceneInstance::ResolveNode(SlotHandle slot, const AZ::Name &bindingId
                ? NodeResult{ScenePolytreeResultCode::InvalidBinding, {}}
                : NodeResult{ScenePolytreeResultCode::Success,
                             SceneNodeHandle{slot, found->m_bindingId}};
+}
+
+ScenePolytreeResultCode
+SceneInstance::AttachControllers(InstanceHandle instance,
+                                 AZStd::vector<ScenePolytreeControllerDeclaration> declarations,
+                                 const ControllerFactoryResolver &resolveFactory) {
+    if (!instance.IsValid() || FindSlot(instance.m_slot) == nullptr) {
+        return ScenePolytreeResultCode::StaleHandle;
+    }
+    if (std::ranges::any_of(m_controllers, [&](const ControllerRecord &record) {
+            return record.m_handle.m_instance == instance;
+        })) {
+        return ScenePolytreeResultCode::ControllersActive;
+    }
+    if (declarations.empty()) {
+        return ScenePolytreeResultCode::Success;
+    }
+    if (!resolveFactory) {
+        return ScenePolytreeResultCode::ControllerFactoryNotFound;
+    }
+
+    std::ranges::sort(declarations, [](const auto &left, const auto &right) {
+        if (left.m_executionOrder != right.m_executionOrder) {
+            return left.m_executionOrder < right.m_executionOrder;
+        }
+        if (left.m_providerBindingId != right.m_providerBindingId) {
+            return left.m_providerBindingId.GetStringView() <
+                   right.m_providerBindingId.GetStringView();
+        }
+        if (left.m_declarationId != right.m_declarationId) {
+            return left.m_declarationId.GetStringView() < right.m_declarationId.GetStringView();
+        }
+        return TypeIdLess(left.m_typeId, right.m_typeId);
+    });
+
+    struct PreparedTarget {
+        ScenePolytreeControllerTargetReference m_reference;
+        SceneNodeHandle m_node;
+        wz::core::graph::NodeHandle m_runtimeNode{wz::core::graph::INVALID_NODE};
+    };
+    struct PreparedController {
+        std::size_t m_declaration{};
+        AZStd::shared_ptr<const ScenePolytreeControllerFactory> m_factory;
+        AZStd::vector<PreparedTarget> m_targets;
+    };
+
+    AZStd::vector<PreparedController> prepared;
+    prepared.reserve(declarations.size());
+    AZStd::vector<AZ::u32> pendingWriteOwners(m_controllerWriteOwners.size());
+    ScenePolytreeResultCode failure = ScenePolytreeResultCode::Success;
+    std::ranges::for_each(
+        std::views::iota(std::size_t{}, declarations.size()), [&](std::size_t declarationIndex) {
+            if (failure != ScenePolytreeResultCode::Success) {
+                return;
+            }
+            auto &declaration = declarations[declarationIndex];
+            const bool duplicateDeclaration =
+                std::ranges::count(declarations, declaration.m_declarationId,
+                                   &ScenePolytreeControllerDeclaration::m_declarationId) != 1;
+            if (declaration.m_declarationId.IsEmpty() || declaration.m_typeId.IsNull() ||
+                declaration.m_configuration == nullptr || declaration.m_targets.empty() ||
+                duplicateDeclaration) {
+                failure = ScenePolytreeResultCode::ControllerInvalidConfiguration;
+                return;
+            }
+            auto factory = resolveFactory(declaration.m_typeId);
+            if (factory == nullptr || factory->GetControllerTypeId() != declaration.m_typeId) {
+                failure = ScenePolytreeResultCode::ControllerFactoryNotFound;
+                return;
+            }
+
+            PreparedController controller{declarationIndex, AZStd::move(factory), {}};
+            controller.m_targets.reserve(declaration.m_targets.size());
+            std::ranges::for_each(declaration.m_targets, [&](const auto &target) {
+                if (failure != ScenePolytreeResultCode::Success) {
+                    return;
+                }
+                const bool usesEntity = target.m_prefabEntity.IsValid();
+                const bool usesBinding = !target.m_bindingId.IsEmpty();
+                const bool duplicateSlot =
+                    std::ranges::count(declaration.m_targets, target.m_slot,
+                                       &ScenePolytreeControllerTargetReference::m_slot) != 1;
+                if (target.m_slot.IsEmpty() || usesEntity == usesBinding || duplicateSlot ||
+                    (target.m_access != ScenePolytreeControllerTargetAccess::ReadOnly &&
+                     target.m_access != ScenePolytreeControllerTargetAccess::ReadWrite)) {
+                    failure = ScenePolytreeResultCode::ControllerInvalidConfiguration;
+                    return;
+                }
+                const NodeResult resolved =
+                    usesEntity ? ResolveEntityNode(instance.m_slot, target.m_prefabEntity)
+                               : ResolveNode(instance.m_slot, target.m_bindingId);
+                if (!resolved.IsSuccess()) {
+                    failure = resolved.m_code == ScenePolytreeResultCode::PartitionMismatch
+                                  ? ScenePolytreeResultCode::ControllerTargetOutsideInstance
+                                  : ScenePolytreeResultCode::ControllerTargetNotFound;
+                    return;
+                }
+                const RuntimeNodeBinding *node = FindNode(resolved.m_handle);
+                if (node == nullptr ||
+                    std::ranges::any_of(controller.m_targets, [&](const auto &entry) {
+                        return entry.m_runtimeNode == node->m_node;
+                    })) {
+                    failure = ScenePolytreeResultCode::ControllerInvalidConfiguration;
+                    return;
+                }
+                if (target.m_access == ScenePolytreeControllerTargetAccess::ReadWrite) {
+                    const bool owned = m_controllerWriteOwners[node->m_node] != 0 ||
+                                       pendingWriteOwners[node->m_node] != 0;
+                    if (owned) {
+                        failure = ScenePolytreeResultCode::ControllerWriteConflict;
+                        return;
+                    }
+                    pendingWriteOwners[node->m_node] =
+                        aznumeric_cast<AZ::u32>(declarationIndex + 1);
+                }
+                controller.m_targets.push_back({target, resolved.m_handle, node->m_node});
+            });
+            if (failure == ScenePolytreeResultCode::Success) {
+                prepared.push_back(AZStd::move(controller));
+            }
+        });
+    if (failure != ScenePolytreeResultCode::Success) {
+        return failure;
+    }
+
+    ScenePolytreeControllerCommandSink startCommands;
+    BeginControllerCommands(startCommands);
+    std::ranges::for_each(prepared, [&](PreparedController &controller) {
+        if (failure != ScenePolytreeResultCode::Success) {
+            return;
+        }
+        auto &declaration = declarations[controller.m_declaration];
+        ControllerBatchEntry *batch = FindControllerBatch(declaration.m_typeId);
+        if (batch == nullptr) {
+            auto created = controller.m_factory->CreateBatch();
+            if (created == nullptr) {
+                failure = ScenePolytreeResultCode::ControllerConstructionFailed;
+                return;
+            }
+            m_controllerBatches.push_back(
+                {declaration.m_typeId, controller.m_factory, AZStd::move(created)});
+            batch = &m_controllerBatches.back();
+        }
+
+        AZStd::vector<ScenePolytreeResolvedControllerTarget> resolvedTargets;
+        resolvedTargets.reserve(controller.m_targets.size());
+        AZStd::vector<ScenePolytreeControllerTargetToken> tokens;
+        tokens.reserve(controller.m_targets.size());
+        std::ranges::for_each(controller.m_targets, [&](const PreparedTarget &target) {
+            const auto token = AllocateControllerTarget(target.m_node, target.m_runtimeNode,
+                                                        target.m_reference.m_access);
+            tokens.push_back(token);
+            resolvedTargets.push_back(
+                {target.m_reference.m_slot, target.m_node, token, target.m_reference.m_access});
+        });
+
+        const auto created = batch->m_batch->CreateController(instance, declaration.m_declarationId,
+                                                              *declaration.m_configuration,
+                                                              resolvedTargets, startCommands);
+        if (!created.IsSuccess()) {
+            std::ranges::for_each(tokens, [&](auto token) { ReleaseControllerTarget(token); });
+            failure = created.m_code == ScenePolytreeControllerResultCode::Success
+                          ? ScenePolytreeResultCode::ControllerConstructionFailed
+                          : MapControllerResult(created.m_code);
+            return;
+        }
+        const ScenePolytreeControllerStateHandle publicState{m_nextControllerHandle++,
+                                                             m_controllerHandleGeneration};
+        if (m_nextControllerHandle == 0) {
+            m_nextControllerHandle = 1;
+            if (++m_controllerHandleGeneration == 0) {
+                ++m_controllerHandleGeneration;
+            }
+        }
+        m_controllers.push_back({{instance, declaration.m_typeId, publicState},
+                                 created.m_state,
+                                 declaration.m_declarationId,
+                                 AZStd::move(tokens)});
+    });
+
+    if (failure != ScenePolytreeResultCode::Success) {
+        EndControllerCommands(startCommands, false);
+        (void)DetachControllers(instance);
+        return failure;
+    }
+    EndControllerCommands(startCommands, true);
+    std::ranges::sort(m_controllerBatches, [](const auto &left, const auto &right) {
+        return TypeIdLess(left.m_typeId, right.m_typeId);
+    });
+    return ScenePolytreeResultCode::Success;
+}
+
+ScenePolytreeControllerResultCode SceneInstance::CloseControllerInput(InstanceHandle instance) {
+    if (!instance.IsValid()) {
+        return ScenePolytreeControllerResultCode::InvalidHandle;
+    }
+    if (FindSlot(instance.m_slot) == nullptr) {
+        return ScenePolytreeControllerResultCode::StaleHandle;
+    }
+    ScenePolytreeControllerResultCode result = ScenePolytreeControllerResultCode::Success;
+    bool matched{};
+    std::ranges::for_each(m_controllers | std::views::filter([&](const ControllerRecord &record) {
+                              return record.m_handle.m_instance == instance;
+                          }),
+                          [&](ControllerRecord &record) {
+                              matched = true;
+                              if (record.m_inputClosed) {
+                                  return;
+                              }
+                              ControllerBatchEntry *batch =
+                                  FindControllerBatch(record.m_handle.m_typeId);
+                              const auto closed =
+                                  batch != nullptr ? batch->m_batch->CloseInput(record.m_batchState)
+                                                   : ScenePolytreeControllerResultCode::StaleHandle;
+                              if (result == ScenePolytreeControllerResultCode::Success &&
+                                  closed != ScenePolytreeControllerResultCode::Success) {
+                                  result = closed;
+                              }
+                              if (closed == ScenePolytreeControllerResultCode::Success) {
+                                  record.m_inputClosed = true;
+                              }
+                          });
+    return matched ? result : ScenePolytreeControllerResultCode::StaleHandle;
+}
+
+ScenePolytreeControllerResultCode SceneInstance::DetachControllers(InstanceHandle instance) {
+    if (!instance.IsValid()) {
+        return ScenePolytreeControllerResultCode::InvalidHandle;
+    }
+    ScenePolytreeControllerResultCode result = CloseControllerInput(instance);
+    std::ranges::for_each(
+        m_controllers | std::views::filter([&](const ControllerRecord &record) {
+            return record.m_handle.m_instance == instance;
+        }),
+        [&](const ControllerRecord &record) {
+            ControllerBatchEntry *batch = FindControllerBatch(record.m_handle.m_typeId);
+            const auto destroyed = batch != nullptr
+                                       ? batch->m_batch->DestroyController(record.m_batchState)
+                                       : ScenePolytreeControllerResultCode::StaleHandle;
+            if (result == ScenePolytreeControllerResultCode::Success &&
+                destroyed != ScenePolytreeControllerResultCode::Success) {
+                result = destroyed;
+            }
+            std::ranges::for_each(record.m_targets,
+                                  [&](auto target) { ReleaseControllerTarget(target); });
+        });
+    AZStd::erase_if(m_controllers, [&](const ControllerRecord &record) {
+        return record.m_handle.m_instance == instance;
+    });
+    AZStd::vector<ControllerBatchEntry> retainedBatches;
+    retainedBatches.reserve(m_controllerBatches.size());
+    std::ranges::for_each(m_controllerBatches, [&](ControllerBatchEntry &batch) {
+        const bool remainsInUse =
+            std::ranges::any_of(m_controllers, [&](const ControllerRecord &record) {
+                return record.m_handle.m_typeId == batch.m_typeId;
+            });
+        if (remainsInUse) {
+            retainedBatches.push_back(AZStd::move(batch));
+        }
+    });
+    m_controllerBatches.swap(retainedBatches);
+    return result;
+}
+
+ScenePolytreeControllerLookupResult
+SceneInstance::FindController(InstanceHandle instance, const AZ::Name &declarationId) const {
+    const auto found = std::ranges::find_if(m_controllers, [&](const ControllerRecord &record) {
+        return record.m_handle.m_instance == instance && record.m_declarationId == declarationId;
+    });
+    return found != m_controllers.end()
+               ? ScenePolytreeControllerLookupResult{ScenePolytreeControllerResultCode::Success,
+                                                     found->m_handle}
+               : ScenePolytreeControllerLookupResult{ScenePolytreeControllerResultCode::StaleHandle,
+                                                     {}};
+}
+
+ScenePolytreeControllerResultCode
+SceneInstance::SubmitControllerInput(ScenePolytreeControllerHandle controller,
+                                     const ScenePolytreeControllerInput &input) {
+    const auto found = std::ranges::find(m_controllers, controller, &ControllerRecord::m_handle);
+    if (found == m_controllers.end()) {
+        return ScenePolytreeControllerResultCode::StaleHandle;
+    }
+    ControllerBatchEntry *batch = FindControllerBatch(controller.m_typeId);
+    if (batch == nullptr) {
+        return ScenePolytreeControllerResultCode::StaleHandle;
+    }
+    ScenePolytreeControllerCommandSink commands;
+    BeginControllerCommands(commands);
+    const auto result = batch->m_batch->SubmitInput(found->m_batchState, input, commands);
+    EndControllerCommands(commands, result == ScenePolytreeControllerResultCode::Success);
+    return result;
+}
+
+bool SceneInstance::HasControllerType(ScenePolytreeControllerTypeId typeId) const {
+    return std::ranges::any_of(m_controllers, [&](const ControllerRecord &record) {
+        return record.m_handle.m_typeId == typeId;
+    });
 }
 
 bool SceneInstance::SetActive(bool active) {
@@ -320,6 +721,10 @@ void SceneInstance::Advance(std::chrono::nanoseconds frameDelta, const Transform
 
     const auto steps = std::views::iota(AZ::u32{}, stepCount);
     std::ranges::for_each(steps, [&](AZ::u32) {
+        const auto step = m_stepSequence.next_step();
+        if (HasRunningControllers()) {
+            RunControllers(step);
+        }
         const auto result = scene_polytree::motion::advance_motion_scene(
             m_runtime.topology(), m_runtime.state(), m_activeMotion, m_stepSequence,
             m_motionWorkspace, m_transformWorkspace, m_policy, m_policy);
@@ -339,7 +744,7 @@ void SceneInstance::Advance(std::chrono::nanoseconds frameDelta, const Transform
 }
 
 bool SceneInstance::NeedsTick() const {
-    return m_active && (!m_activeMotion.empty() || HasDirtyTransforms());
+    return m_active && (HasRunningControllers() || !m_activeMotion.empty() || HasDirtyTransforms());
 }
 
 SceneStatistics SceneInstance::GetStatistics() const {
@@ -484,8 +889,227 @@ const RuntimeNodeBinding *SceneInstance::FindNode(const SceneNodeHandle &node) c
     return found != slot->m_nodes.end() ? &*found : nullptr;
 }
 
+NodeResult SceneInstance::ResolveEntityNode(SlotHandle slot, AZ::EntityId entity) const {
+    const RuntimeSlot *runtimeSlot = FindSlot(slot);
+    if (runtimeSlot == nullptr) {
+        return {ScenePolytreeResultCode::StaleHandle, {}};
+    }
+    const auto found = m_entityToNode.find(entity);
+    if (found == m_entityToNode.end()) {
+        return {ScenePolytreeResultCode::InvalidBinding, {}};
+    }
+    const auto binding =
+        std::ranges::find(runtimeSlot->m_nodes, found->second, &RuntimeNodeBinding::m_node);
+    return binding != runtimeSlot->m_nodes.end()
+               ? NodeResult{ScenePolytreeResultCode::Success,
+                            SceneNodeHandle{slot, binding->m_bindingId}}
+               : NodeResult{ScenePolytreeResultCode::PartitionMismatch, {}};
+}
+
+SceneInstance::ControllerBatchEntry *
+SceneInstance::FindControllerBatch(ScenePolytreeControllerTypeId typeId) {
+    const auto found =
+        std::ranges::find(m_controllerBatches, typeId, &ControllerBatchEntry::m_typeId);
+    return found != m_controllerBatches.end() ? &*found : nullptr;
+}
+
+const SceneInstance::ControllerBatchEntry *
+SceneInstance::FindControllerBatch(ScenePolytreeControllerTypeId typeId) const {
+    const auto found =
+        std::ranges::find(m_controllerBatches, typeId, &ControllerBatchEntry::m_typeId);
+    return found != m_controllerBatches.end() ? &*found : nullptr;
+}
+
+SceneInstance::ControllerTargetRecord *
+SceneInstance::FindControllerTarget(ScenePolytreeControllerTargetToken target, AZ::u64 epoch) {
+    if (epoch == 0 || epoch != m_controllerCommandEpoch || !target.IsValid() ||
+        target.m_index >= m_controllerTargets.size()) {
+        return nullptr;
+    }
+    ControllerTargetRecord &record = m_controllerTargets[target.m_index];
+    if (!record.m_active || record.m_generation != target.m_generation) {
+        return nullptr;
+    }
+    return &record;
+}
+
+const SceneInstance::ControllerTargetRecord *
+SceneInstance::FindControllerTarget(ScenePolytreeControllerTargetToken target,
+                                    AZ::u64 epoch) const {
+    if (epoch == 0 || epoch != m_controllerCommandEpoch || !target.IsValid() ||
+        target.m_index >= m_controllerTargets.size()) {
+        return nullptr;
+    }
+    const ControllerTargetRecord &record = m_controllerTargets[target.m_index];
+    return record.m_active && record.m_generation == target.m_generation ? &record : nullptr;
+}
+
+ScenePolytreeControllerTargetToken
+SceneInstance::AllocateControllerTarget(const SceneNodeHandle &node,
+                                        wz::core::graph::NodeHandle runtimeNode,
+                                        ScenePolytreeControllerTargetAccess access) {
+    AZ::u32 index{};
+    if (m_freeControllerTargets.empty()) {
+        index = aznumeric_cast<AZ::u32>(m_controllerTargets.size());
+        m_controllerTargets.push_back({});
+    } else {
+        index = m_freeControllerTargets.back();
+        m_freeControllerTargets.pop_back();
+    }
+    ControllerTargetRecord &record = m_controllerTargets[index];
+    record.m_node = node;
+    record.m_runtimeNode = runtimeNode;
+    record.m_access = access;
+    record.m_pendingLocal = AZ::Transform::CreateIdentity();
+    record.m_pendingMotion = {};
+    record.m_localEpoch = 0;
+    record.m_motionEpoch = 0;
+    record.m_active = true;
+    if (access == ScenePolytreeControllerTargetAccess::ReadWrite) {
+        m_controllerWriteOwners[runtimeNode] = index + 1;
+    }
+    m_localTouched.reserve(m_controllerTargets.size());
+    m_motionTouched.reserve(m_controllerTargets.size());
+    m_controllerMotionUpdates.reserve(m_controllerTargets.size());
+    return {index, record.m_generation};
+}
+
+void SceneInstance::ReleaseControllerTarget(ScenePolytreeControllerTargetToken target) {
+    if (!target.IsValid() || target.m_index >= m_controllerTargets.size()) {
+        return;
+    }
+    ControllerTargetRecord &record = m_controllerTargets[target.m_index];
+    if (!record.m_active || record.m_generation != target.m_generation) {
+        return;
+    }
+    if (record.m_access == ScenePolytreeControllerTargetAccess::ReadWrite &&
+        m_controllerWriteOwners[record.m_runtimeNode] == target.m_index + 1) {
+        m_controllerWriteOwners[record.m_runtimeNode] = 0;
+    }
+    record.m_active = false;
+    record.m_node = {};
+    record.m_runtimeNode = wz::core::graph::INVALID_NODE;
+    if (++record.m_generation == 0) {
+        ++record.m_generation;
+    }
+    m_freeControllerTargets.push_back(target.m_index);
+}
+
+bool SceneInstance::HasControllers(SlotHandle slot) const {
+    return std::ranges::any_of(m_controllers, [&](const ControllerRecord &record) {
+        return record.m_handle.m_instance.m_slot == slot;
+    });
+}
+
+void SceneInstance::BeginControllerCommands(ScenePolytreeControllerCommandSink &sink) {
+    m_localTouched.clear();
+    m_motionTouched.clear();
+    m_controllerMotionUpdates.clear();
+    if (++m_controllerCommandEpoch == 0) {
+        ++m_controllerCommandEpoch;
+    }
+    ControllerCommandSinkAccess::Bind(sink, *this, m_controllerCommandEpoch);
+}
+
+void SceneInstance::EndControllerCommands(ScenePolytreeControllerCommandSink &sink, bool apply) {
+    ControllerCommandSinkAccess::Clear(sink);
+    if (apply) {
+        std::ranges::for_each(m_localTouched, [&](AZ::u32 index) {
+            const ControllerTargetRecord &target = m_controllerTargets[index];
+            const auto applied =
+                m_runtime.set_local(target.m_runtimeNode, AzTransformValue(target.m_pendingLocal));
+            AZ_Error("ScenePolytree", applied == scene_polytree::transform_error::none,
+                     "Failed to apply a behavior local-transform command.");
+        });
+        std::ranges::transform(
+            m_motionTouched, std::back_inserter(m_controllerMotionUpdates), [&](AZ::u32 index) {
+                const ControllerTargetRecord &target = m_controllerTargets[index];
+                return ActiveSet::update_type{target.m_runtimeNode, target.m_pendingMotion};
+            });
+        const auto applied = m_activeMotion.apply_updates(m_controllerMotionUpdates, m_policy,
+                                                          m_activeMotionUpdateWorkspace);
+        AZ_Error("ScenePolytree", applied == scene_polytree::motion::motion_error::none,
+                 "Failed to apply a behavior motion command batch.");
+    }
+    m_localTouched.clear();
+    m_motionTouched.clear();
+    m_controllerMotionUpdates.clear();
+}
+
+bool SceneInstance::HasRunningControllers() const {
+    return std::ranges::any_of(m_controllerBatches, [](const ControllerBatchEntry &entry) {
+        return entry.m_batch->HasRunningControllers();
+    });
+}
+
+void SceneInstance::RunControllers(scene_polytree::motion::fixed_motion_step step) {
+    ScenePolytreeControllerCommandSink sink;
+    BeginControllerCommands(sink);
+    std::ranges::for_each(m_controllerBatches, [&](ControllerBatchEntry &entry) {
+        if (entry.m_batch->HasRunningControllers()) {
+            entry.m_batch->FixedStepBatch({step.tick, step.delta}, sink);
+        }
+    });
+    EndControllerCommands(sink, true);
+}
+
+ScenePolytreeControllerResultCode
+SceneInstance::SetControllerLocal(ScenePolytreeControllerTargetToken target, AZ::u64 epoch,
+                                  const AZ::Transform &local) {
+    ControllerTargetRecord *record = FindControllerTarget(target, epoch);
+    if (record == nullptr) {
+        return ScenePolytreeControllerResultCode::InvalidTarget;
+    }
+    if (record->m_access != ScenePolytreeControllerTargetAccess::ReadWrite) {
+        return ScenePolytreeControllerResultCode::ReadOnlyTarget;
+    }
+    if (!local.IsFinite()) {
+        return ScenePolytreeControllerResultCode::InvalidInput;
+    }
+    record->m_pendingLocal = local;
+    if (record->m_localEpoch != epoch) {
+        record->m_localEpoch = epoch;
+        m_localTouched.push_back(target.m_index);
+    }
+    return ScenePolytreeControllerResultCode::Success;
+}
+
+ScenePolytreeControllerResultCode
+SceneInstance::SetControllerVelocity(ScenePolytreeControllerTargetToken target, AZ::u64 epoch,
+                                     const AZ::Vector3 &linear, const AZ::Vector3 &angular) {
+    ControllerTargetRecord *record = FindControllerTarget(target, epoch);
+    if (record == nullptr) {
+        return ScenePolytreeControllerResultCode::InvalidTarget;
+    }
+    if (record->m_access != ScenePolytreeControllerTargetAccess::ReadWrite) {
+        return ScenePolytreeControllerResultCode::ReadOnlyTarget;
+    }
+    if (!linear.IsFinite() || !angular.IsFinite()) {
+        return ScenePolytreeControllerResultCode::InvalidInput;
+    }
+    record->m_pendingMotion = {linear, angular};
+    if (record->m_motionEpoch != epoch) {
+        record->m_motionEpoch = epoch;
+        m_motionTouched.push_back(target.m_index);
+    }
+    return ScenePolytreeControllerResultCode::Success;
+}
+
+ScenePolytreeControllerResultCode
+SceneInstance::GetControllerLocal(ScenePolytreeControllerTargetToken target, AZ::u64 epoch,
+                                  AZ::Transform &local) const {
+    const ControllerTargetRecord *record = FindControllerTarget(target, epoch);
+    if (record == nullptr) {
+        return ScenePolytreeControllerResultCode::InvalidTarget;
+    }
+    local = record->m_localEpoch == epoch ? record->m_pendingLocal
+                                          : m_runtime.state().local(record->m_runtimeNode).m_value;
+    return ScenePolytreeControllerResultCode::Success;
+}
+
 void SceneInstance::ClearSlot(RuntimeSlot &slot) {
     std::ranges::for_each(slot.m_nodes, [&](const RuntimeNodeBinding &node) {
+        m_entityToNode.erase(m_entityBindings[node.m_node].m_entity);
         m_entityBindings[node.m_node] = EntityTarget{};
         (void)m_activeMotion.deactivate(node.m_node);
         (void)m_runtime.set_local(node.m_node, AzTransformValue(node.m_initialLocal));

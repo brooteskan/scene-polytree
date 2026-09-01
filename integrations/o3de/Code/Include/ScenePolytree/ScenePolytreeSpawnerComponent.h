@@ -1,6 +1,7 @@
 #pragma once
 
 #include <ScenePolytree/ScenePolytreeBus.h>
+#include <ScenePolytree/ScenePolytreeControllerBus.h>
 #include <ScenePolytree/ScenePolytreeSpawnerBus.h>
 #include <ScenePolytree/ScenePolytreeTypeIds.h>
 
@@ -56,9 +57,10 @@ class ScenePolytreeSpawnerComponent final
                                            const ScenePolytreeFailure &failure) override;
     void OnScenePolytreeCommandCompleted(SceneCommandId command, SceneCommandType type,
                                          ScenePolytreeResultCode result) override;
-    void OnScenePolytreeSpawnCompleted(AZ::u32 spawnerGeneration, SpawnRequestId request,
-                                       AZ::u32 ticketId, SpawnError error,
-                                       AZStd::vector<ScenePolytreeEntityBinding> bindings) override;
+    void OnScenePolytreeSpawnCompleted(
+        AZ::u32 spawnerGeneration, SpawnRequestId request, AZ::u32 ticketId, SpawnError error,
+        AZStd::vector<ScenePolytreeEntityBinding> bindings,
+        AZStd::vector<ScenePolytreeControllerDeclaration> declarations) override;
     void OnScenePolytreeDespawnCompleted(AZ::u32 spawnerGeneration, SpawnRequestId request,
                                          AZ::u32 ticketId) override;
 
@@ -75,6 +77,9 @@ class ScenePolytreeSpawnerComponent final
     void SubmitPlace(SpawnRequestId requestId);
     void BeginEntitySpawn(SpawnRequestId requestId);
     void SubmitBind(SpawnRequestId requestId, AZStd::vector<ScenePolytreeEntityBinding> bindings);
+    void SubmitAttachControllers(SpawnRequestId requestId,
+                                 AZStd::vector<ScenePolytreeControllerDeclaration> declarations);
+    void SubmitDetachControllers(SpawnRequestId requestId);
     void BeginSpawnFailure(SpawnRequestId requestId, const ScenePolytreeSpawnFailure &failure);
     void SubmitUnbind(SpawnRequestId requestId);
     void BeginEntityDespawn(SpawnRequestId requestId);

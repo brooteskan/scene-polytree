@@ -15,6 +15,7 @@
 #include <AzCore/std/parallel/mutex.h>
 #include <AzCore/std/smart_ptr/make_shared.h>
 #include <AzCore/std/smart_ptr/shared_ptr.h>
+#include <AzCore/std/string/string.h>
 #include <AzFramework/Components/TransformComponent.h>
 #include <AzFramework/Spawnable/SpawnableEntitiesInterface.h>
 
@@ -41,6 +42,7 @@ struct SpawnCallbackState {
 struct CollectedBindings {
     SpawnError m_error{SpawnError::None};
     AZStd::vector<ScenePolytreeEntityBinding> m_bindings;
+    AZStd::vector<ScenePolytreeControllerDeclaration> m_declarations;
 };
 
 void StorePreparationError(const AZStd::shared_ptr<SpawnCallbackState> &state, SpawnError error) {
@@ -201,14 +203,78 @@ CollectPrefabBindings(const AZStd::shared_ptr<SpawnCallbackState> &state,
                     {node.m_bindingId, entity->GetId(), AZ::Transform::CreateIdentity()});
             }
         });
+    if (result.m_error == SpawnError::None) {
+        std::ranges::for_each(entities, [&](const AZ::Entity *entity) {
+            if (result.m_error != SpawnError::None || entity == nullptr) {
+                return;
+            }
+            const auto hierarchyEntity = std::ranges::find(hierarchyEntities, entity->GetId());
+            const AZ::Name providerBinding =
+                hierarchyEntity != hierarchyEntities.end()
+                    ? state
+                          ->m_topology[static_cast<std::size_t>(hierarchyEntity -
+                                                                hierarchyEntities.begin())]
+                          .m_bindingId
+                    : AZ::Name{};
+            std::ranges::for_each(entity->GetComponents(), [&](const AZ::Component *component) {
+                if (result.m_error != SpawnError::None || component == nullptr) {
+                    return;
+                }
+                const auto *provider =
+                    azrtti_cast<const ScenePolytreeBehaviorProvider *>(component);
+                if (provider == nullptr) {
+                    return;
+                }
+                auto declaration = provider->CopyScenePolytreeControllerDeclaration();
+                auto configuration = declaration.m_configuration != nullptr
+                                         ? declaration.m_configuration->Clone()
+                                         : nullptr;
+                const bool invalidTarget =
+                    declaration.m_targets.empty() ||
+                    std::ranges::any_of(declaration.m_targets, [&](const auto &target) {
+                        return !target.m_prefabEntity.IsValid() || !target.m_bindingId.IsEmpty() ||
+                               std::ranges::count_if(entities, [&](const AZ::Entity *candidate) {
+                                   return candidate != nullptr &&
+                                          candidate->GetId() == target.m_prefabEntity;
+                               }) != 1;
+                    });
+                if (providerBinding.IsEmpty() || declaration.m_declarationId.IsEmpty() ||
+                    declaration.m_typeId.IsNull() || configuration == nullptr || invalidTarget) {
+                    result.m_error = SpawnError::InvalidControllerConfiguration;
+                    return;
+                }
+                declaration.m_configuration = AZStd::move(configuration);
+                declaration.m_providerBindingId = providerBinding;
+                result.m_declarations.push_back(AZStd::move(declaration));
+            });
+        });
+    }
     if (result.m_error != SpawnError::None) {
         result.m_bindings.clear();
+        result.m_declarations.clear();
     }
     return result;
 }
 
 [[nodiscard]] ScenePolytreeSpawnFailure SceneFailure(ScenePolytreeResultCode result) {
     return {SpawnError::SceneCommandFailed, result, ScenePolytreeResultCode::Success};
+}
+
+[[nodiscard]] ScenePolytreeSpawnFailure ControllerFailure(ScenePolytreeResultCode result) {
+    const auto error = result == ScenePolytreeResultCode::ControllerFactoryNotFound
+                           ? SpawnError::ControllerFactoryNotFound
+                       : result == ScenePolytreeResultCode::ControllerInvalidConfiguration
+                           ? SpawnError::InvalidControllerConfiguration
+                       : result == ScenePolytreeResultCode::ControllerTargetNotFound
+                           ? SpawnError::ControllerTargetNotFound
+                       : result == ScenePolytreeResultCode::ControllerTargetOutsideInstance
+                           ? SpawnError::CrossInstanceControllerTarget
+                       : result == ScenePolytreeResultCode::ControllerWriteConflict
+                           ? SpawnError::ControllerWriteConflict
+                       : result == ScenePolytreeResultCode::ControllerConstructionFailed
+                           ? SpawnError::ControllerConstructionFailed
+                           : SpawnError::SceneCommandFailed;
+    return {error, result, ScenePolytreeResultCode::Success};
 }
 } // namespace
 
@@ -218,7 +284,9 @@ struct ScenePolytreeSpawnerComponent::RuntimeState {
         Placing,
         Spawning,
         Binding,
+        AttachingControllers,
         Active,
+        DetachingControllers,
         Unbinding,
         DespawningEntities,
         CleanupResetting,
@@ -235,10 +303,12 @@ struct ScenePolytreeSpawnerComponent::RuntimeState {
         SceneCommandType m_pendingType{SceneCommandType::ResetSlot};
         AZStd::unique_ptr<AzFramework::EntitySpawnTicket> m_ticket;
         AZStd::shared_ptr<SpawnCallbackState> m_callbackState;
+        AZStd::vector<ScenePolytreeControllerDeclaration> m_declarations;
         ScenePolytreeSpawnFailure m_spawnFailure;
         DespawnRequestId m_despawnRequest;
         ScenePolytreeDespawnFailure m_despawnFailure;
         bool m_terminalSpawnFailure{};
+        bool m_controllersAttached{};
     };
 
     [[nodiscard]] InstanceRecord *Find(SpawnRequestId request) {
@@ -430,6 +500,7 @@ void ScenePolytreeSpawnerComponent::Deactivate() {
     }
 
     auto *sceneRequests = AZ::Interface<ScenePolytreeRequests>::Get();
+    auto *controllerRequests = AZ::Interface<ScenePolytreeControllerLifecycleRequests>::Get();
     auto *spawnRequests = AzFramework::SpawnableEntitiesInterface::Get();
     std::ranges::for_each(m_runtime->m_instances, [&](auto &entry) {
         auto &record = *entry.second;
@@ -437,6 +508,9 @@ void ScenePolytreeSpawnerComponent::Deactivate() {
             AZ::u8 expected = static_cast<AZ::u8>(SpawnBoundary::Cancelable);
             (void)record.m_callbackState->m_boundary.compare_exchange_strong(
                 expected, static_cast<AZ::u8>(SpawnBoundary::Cancelled));
+        }
+        if (controllerRequests != nullptr && record.m_controllersAttached) {
+            (void)controllerRequests->DestroyControllersImmediately(record.m_instance);
         }
         if (sceneRequests != nullptr) {
             (void)sceneRequests->UnbindSlot(record.m_instance.m_slot);
@@ -524,7 +598,11 @@ DespawnRequestId ScenePolytreeSpawnerComponent::Despawn(InstanceHandle instance)
     }
     record->m_terminalSpawnFailure = false;
     record->m_despawnRequest = requestId;
-    SubmitUnbind(record->m_spawnRequest);
+    if (record->m_controllersAttached) {
+        SubmitDetachControllers(record->m_spawnRequest);
+    } else {
+        SubmitUnbind(record->m_spawnRequest);
+    }
     return requestId;
 }
 
@@ -734,11 +812,14 @@ void ScenePolytreeSpawnerComponent::BeginEntitySpawn(SpawnRequestId requestId) {
         CollectedBindings collected = CollectPrefabBindings(callbackState, entities);
         AZ::TickBus::QueueFunction([entityId, generation, requestId, ticketId,
                                     error = collected.m_error,
-                                    bindings = AZStd::move(collected.m_bindings)]() mutable {
+                                    bindings = AZStd::move(collected.m_bindings),
+                                    declarations =
+                                        AZStd::move(collected.m_declarations)]() mutable {
             Internal::ScenePolytreeSpawnerAsyncNotificationBus::Event(
                 entityId,
                 &Internal::ScenePolytreeSpawnerAsyncNotifications::OnScenePolytreeSpawnCompleted,
-                generation, requestId, ticketId, error, AZStd::move(bindings));
+                generation, requestId, ticketId, error, AZStd::move(bindings),
+                AZStd::move(declarations));
         });
     };
     record->m_state = RuntimeState::InstanceState::Spawning;
@@ -747,7 +828,8 @@ void ScenePolytreeSpawnerComponent::BeginEntitySpawn(SpawnRequestId requestId) {
 
 void ScenePolytreeSpawnerComponent::OnScenePolytreeSpawnCompleted(
     AZ::u32 spawnerGeneration, SpawnRequestId requestId, AZ::u32 ticketId, SpawnError error,
-    AZStd::vector<ScenePolytreeEntityBinding> bindings) {
+    AZStd::vector<ScenePolytreeEntityBinding> bindings,
+    AZStd::vector<ScenePolytreeControllerDeclaration> declarations) {
     auto *record = m_runtime->Find(requestId);
     if (spawnerGeneration != m_runtime->m_generation || record == nullptr ||
         record->m_state != RuntimeState::InstanceState::Spawning || record->m_ticket == nullptr ||
@@ -757,10 +839,13 @@ void ScenePolytreeSpawnerComponent::OnScenePolytreeSpawnCompleted(
     if (error != SpawnError::None) {
         const auto sceneResult = error == SpawnError::InvalidTransform
                                      ? ScenePolytreeResultCode::InvalidTransform
+                                 : error == SpawnError::InvalidControllerConfiguration
+                                     ? ScenePolytreeResultCode::ControllerInvalidConfiguration
                                      : ScenePolytreeResultCode::InvalidBinding;
         BeginSpawnFailure(requestId, {error, sceneResult});
         return;
     }
+    record->m_declarations = AZStd::move(declarations);
     SubmitBind(requestId, AZStd::move(bindings));
 }
 
@@ -784,6 +869,55 @@ void ScenePolytreeSpawnerComponent::SubmitBind(SpawnRequestId requestId,
     record->m_state = RuntimeState::InstanceState::Binding;
     record->m_pendingCommand = submitted.m_command;
     record->m_pendingType = SceneCommandType::BindSlot;
+}
+
+void ScenePolytreeSpawnerComponent::SubmitAttachControllers(
+    SpawnRequestId requestId, AZStd::vector<ScenePolytreeControllerDeclaration> declarations) {
+    auto *record = m_runtime->Find(requestId);
+    auto *requests = AZ::Interface<ScenePolytreeControllerLifecycleRequests>::Get();
+    if (record == nullptr) {
+        return;
+    }
+    if (requests == nullptr) {
+        BeginSpawnFailure(requestId, {SpawnError::NotReady});
+        return;
+    }
+    const auto submitted = requests->SubmitAttachControllers(
+        record->m_instance, AZStd::move(declarations), GetEntityId());
+    if (!submitted.IsAccepted()) {
+        BeginSpawnFailure(requestId, ControllerFailure(submitted.m_code));
+        return;
+    }
+    record->m_state = RuntimeState::InstanceState::AttachingControllers;
+    record->m_pendingCommand = submitted.m_command;
+    record->m_pendingType = SceneCommandType::AttachControllers;
+}
+
+void ScenePolytreeSpawnerComponent::SubmitDetachControllers(SpawnRequestId requestId) {
+    auto *record = m_runtime->Find(requestId);
+    auto *requests = AZ::Interface<ScenePolytreeControllerLifecycleRequests>::Get();
+    if (record == nullptr) {
+        return;
+    }
+    if (requests == nullptr) {
+        record->m_despawnFailure = {DespawnError::SceneCommandFailed,
+                                    ScenePolytreeResultCode::SceneNotFound,
+                                    ScenePolytreeResultCode::SceneNotFound};
+        SubmitUnbind(requestId);
+        return;
+    }
+    const auto submitted = requests->SubmitDetachControllers(record->m_instance, GetEntityId());
+    if (!submitted.IsAccepted()) {
+        (void)requests->DestroyControllersImmediately(record->m_instance);
+        record->m_controllersAttached = false;
+        record->m_despawnFailure = {DespawnError::SceneCommandFailed, submitted.m_code,
+                                    submitted.m_code};
+        SubmitUnbind(requestId);
+        return;
+    }
+    record->m_state = RuntimeState::InstanceState::DetachingControllers;
+    record->m_pendingCommand = submitted.m_command;
+    record->m_pendingType = SceneCommandType::DetachControllers;
 }
 
 void ScenePolytreeSpawnerComponent::BeginSpawnFailure(SpawnRequestId requestId,
@@ -964,12 +1098,32 @@ void ScenePolytreeSpawnerComponent::OnScenePolytreeCommandCompleted(
     case RuntimeState::InstanceState::Binding:
         if (result != ScenePolytreeResultCode::Success) {
             BeginSpawnFailure(requestId, SceneFailure(result));
+        } else if (!record->m_declarations.empty()) {
+            SubmitAttachControllers(requestId, AZStd::move(record->m_declarations));
         } else {
             record->m_state = RuntimeState::InstanceState::Active;
             ScenePolytreeSpawnerNotificationBus::Event(
                 GetEntityId(), &ScenePolytreeSpawnerNotifications::OnSpawnSucceeded,
                 record->m_spawnRequest, record->m_instance, record->m_request.m_context);
         }
+        break;
+    case RuntimeState::InstanceState::AttachingControllers:
+        if (result != ScenePolytreeResultCode::Success) {
+            BeginSpawnFailure(requestId, ControllerFailure(result));
+        } else {
+            record->m_controllersAttached = true;
+            record->m_state = RuntimeState::InstanceState::Active;
+            ScenePolytreeSpawnerNotificationBus::Event(
+                GetEntityId(), &ScenePolytreeSpawnerNotifications::OnSpawnSucceeded,
+                record->m_spawnRequest, record->m_instance, record->m_request.m_context);
+        }
+        break;
+    case RuntimeState::InstanceState::DetachingControllers:
+        record->m_controllersAttached = false;
+        if (result != ScenePolytreeResultCode::Success) {
+            record->m_despawnFailure = {DespawnError::SceneCommandFailed, result, result};
+        }
+        SubmitUnbind(requestId);
         break;
     case RuntimeState::InstanceState::Unbinding:
         if (result != ScenePolytreeResultCode::Success) {

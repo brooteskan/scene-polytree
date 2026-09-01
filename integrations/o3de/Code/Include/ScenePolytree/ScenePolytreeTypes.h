@@ -39,6 +39,13 @@ enum class ScenePolytreeResultCode : AZ::u8 {
     InvalidBinding,
     ConstructionFailed,
     InvalidConfiguration,
+    ControllerFactoryNotFound,
+    ControllerInvalidConfiguration,
+    ControllerTargetNotFound,
+    ControllerTargetOutsideInstance,
+    ControllerWriteConflict,
+    ControllerConstructionFailed,
+    ControllersActive,
 };
 
 enum class SceneCommandType : AZ::u8 {
@@ -47,6 +54,8 @@ enum class SceneCommandType : AZ::u8 {
     UnbindSlot,
     ResetSlot,
     ReleaseSlot,
+    AttachControllers,
+    DetachControllers,
 };
 
 struct SceneCommandId {

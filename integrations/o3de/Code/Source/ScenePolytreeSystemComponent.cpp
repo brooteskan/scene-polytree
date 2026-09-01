@@ -10,6 +10,28 @@
 #include <utility>
 
 namespace ScenePolytree {
+namespace {
+[[nodiscard]] ScenePolytreeResultCode MapControllerResult(ScenePolytreeControllerResultCode code) {
+    switch (code) {
+    case ScenePolytreeControllerResultCode::Success:
+        return ScenePolytreeResultCode::Success;
+    case ScenePolytreeControllerResultCode::FactoryNotFound:
+        return ScenePolytreeResultCode::ControllerFactoryNotFound;
+    case ScenePolytreeControllerResultCode::InvalidConfiguration:
+        return ScenePolytreeResultCode::ControllerInvalidConfiguration;
+    case ScenePolytreeControllerResultCode::InvalidTarget:
+        return ScenePolytreeResultCode::ControllerTargetNotFound;
+    case ScenePolytreeControllerResultCode::InvalidHandle:
+    case ScenePolytreeControllerResultCode::StaleHandle:
+        return ScenePolytreeResultCode::StaleHandle;
+    case ScenePolytreeControllerResultCode::ConstructionFailed:
+        return ScenePolytreeResultCode::ControllerConstructionFailed;
+    default:
+        return ScenePolytreeResultCode::ControllerConstructionFailed;
+    }
+}
+} // namespace
+
 void ScenePolytreeSystemComponent::Reflect(AZ::ReflectContext *context) {
     if (auto *serializeContext = azrtti_cast<AZ::SerializeContext *>(context)) {
         serializeContext->Class<ScenePolytreeSystemComponent, AZ::Component>()->Version(1);
@@ -29,6 +51,9 @@ void ScenePolytreeSystemComponent::GetIncompatibleServices(
 void ScenePolytreeSystemComponent::Activate() {
     AZ::Interface<ScenePolytreeRequests>::Register(this);
     AZ::Interface<ScenePolytreeRegistrationRequests>::Register(this);
+    AZ::Interface<ScenePolytreeControllerRegistry>::Register(this);
+    AZ::Interface<ScenePolytreeControllerRequests>::Register(this);
+    AZ::Interface<ScenePolytreeControllerLifecycleRequests>::Register(this);
     ScenePolytreeRequestBus::Handler::BusConnect();
     AzFramework::GameEntityContextEventBus::Handler::BusConnect();
     AzFramework::RootSpawnableNotificationBus::Handler::BusConnect();
@@ -40,12 +65,16 @@ void ScenePolytreeSystemComponent::Deactivate() {
     AzFramework::RootSpawnableNotificationBus::Handler::BusDisconnect();
     AzFramework::GameEntityContextEventBus::Handler::BusDisconnect();
     ScenePolytreeRequestBus::Handler::BusDisconnect();
+    AZ::Interface<ScenePolytreeControllerLifecycleRequests>::Unregister(this);
+    AZ::Interface<ScenePolytreeControllerRequests>::Unregister(this);
+    AZ::Interface<ScenePolytreeControllerRegistry>::Unregister(this);
     AZ::Interface<ScenePolytreeRegistrationRequests>::Unregister(this);
     AZ::Interface<ScenePolytreeRequests>::Unregister(this);
     m_commands.clear();
     m_scenes.clear();
     m_registeredSceneEntities.clear();
     m_pendingPrefabRegistrations.clear();
+    m_controllerFactories.clear();
     m_collectionClosed = false;
 }
 
@@ -262,6 +291,118 @@ void ScenePolytreeSystemComponent::UnregisterPrefab(RegistrationToken token) {
                     [&](const auto &entry) { return entry.m_token == token; });
 }
 
+ScenePolytreeControllerFactoryRegistrationResult
+ScenePolytreeSystemComponent::RegisterControllerFactory(
+    AZStd::shared_ptr<const ScenePolytreeControllerFactory> factory) {
+    AZStd::scoped_lock lock(m_mutex);
+    if (factory == nullptr || factory->GetControllerTypeId().IsNull()) {
+        return {ScenePolytreeControllerResultCode::InvalidConfiguration, {}};
+    }
+    const auto typeId = factory->GetControllerTypeId();
+    if (std::ranges::any_of(m_controllerFactories,
+                            [&](const auto &entry) { return entry.m_token.m_typeId == typeId; })) {
+        return {ScenePolytreeControllerResultCode::FactoryAlreadyRegistered, {}};
+    }
+    if (++m_nextControllerFactoryGeneration == 0) {
+        ++m_nextControllerFactoryGeneration;
+    }
+    const ScenePolytreeControllerFactoryRegistrationToken token{typeId,
+                                                                m_nextControllerFactoryGeneration};
+    m_controllerFactories.push_back({token, AZStd::move(factory)});
+    return {ScenePolytreeControllerResultCode::Success, token};
+}
+
+ScenePolytreeControllerResultCode ScenePolytreeSystemComponent::UnregisterControllerFactory(
+    ScenePolytreeControllerFactoryRegistrationToken token) {
+    AZStd::scoped_lock lock(m_mutex);
+    const auto found =
+        std::ranges::find(m_controllerFactories, token, &RegisteredControllerFactory::m_token);
+    if (!token.IsValid() || found == m_controllerFactories.end()) {
+        return ScenePolytreeControllerResultCode::StaleHandle;
+    }
+    if (std::ranges::any_of(m_scenes, [&](const auto &entry) {
+            return entry.second.m_instance != nullptr &&
+                   entry.second.m_instance->HasControllerType(token.m_typeId);
+        })) {
+        return ScenePolytreeControllerResultCode::FactoryInUse;
+    }
+    m_controllerFactories.erase(found);
+    return ScenePolytreeControllerResultCode::Success;
+}
+
+ScenePolytreeControllerLookupResult
+ScenePolytreeSystemComponent::FindController(InstanceHandle instance,
+                                             const AZ::Name &declarationId) const {
+    AZStd::scoped_lock lock(m_mutex);
+    const Internal::SceneInstance *scene = FindScene(instance.m_slot.m_spawner.m_scene);
+    return scene != nullptr ? scene->FindController(instance, declarationId)
+                            : ScenePolytreeControllerLookupResult{
+                                  ScenePolytreeControllerResultCode::StaleHandle, {}};
+}
+
+ScenePolytreeControllerResultCode
+ScenePolytreeSystemComponent::SubmitControllerInput(ScenePolytreeControllerHandle controller,
+                                                    const ScenePolytreeControllerInput &input) {
+    AZStd::scoped_lock lock(m_mutex);
+    Internal::SceneInstance *scene = FindScene(controller.m_instance.m_slot.m_spawner.m_scene);
+    if (scene == nullptr) {
+        return ScenePolytreeControllerResultCode::StaleHandle;
+    }
+    const auto result = scene->SubmitControllerInput(controller, input);
+    if (result == ScenePolytreeControllerResultCode::Success) {
+        RefreshTickConnection();
+    }
+    return result;
+}
+
+SceneCommandSubmission ScenePolytreeSystemComponent::SubmitAttachControllers(
+    InstanceHandle instance, AZStd::vector<ScenePolytreeControllerDeclaration> declarations,
+    AZ::EntityId completionEntity) {
+    AZStd::scoped_lock lock(m_mutex);
+    if (!instance.IsValid() || !AcceptsCommands(instance.m_slot.m_spawner.m_scene)) {
+        return {ScenePolytreeResultCode::SceneNotFound, {}};
+    }
+    const SceneCommandId command{m_nextCommandId++};
+    Enqueue(
+        AttachControllersCommand{instance, AZStd::move(declarations), command, completionEntity});
+    return {ScenePolytreeResultCode::Success, command};
+}
+
+SceneCommandSubmission
+ScenePolytreeSystemComponent::SubmitDetachControllers(InstanceHandle instance,
+                                                      AZ::EntityId completionEntity) {
+    AZStd::scoped_lock lock(m_mutex);
+    Internal::SceneInstance *scene = FindScene(instance.m_slot.m_spawner.m_scene);
+    if (scene == nullptr || !instance.IsValid()) {
+        return {ScenePolytreeResultCode::SceneNotFound, {}};
+    }
+    const auto closed = scene->CloseControllerInput(instance);
+    if (closed != ScenePolytreeControllerResultCode::Success) {
+        return {MapControllerResult(closed), {}};
+    }
+    const SceneCommandId command{m_nextCommandId++};
+    Enqueue(DetachControllersCommand{instance, command, completionEntity});
+    return {ScenePolytreeResultCode::Success, command};
+}
+
+ScenePolytreeControllerResultCode
+ScenePolytreeSystemComponent::CloseControllerInput(InstanceHandle instance) {
+    AZStd::scoped_lock lock(m_mutex);
+    Internal::SceneInstance *scene = FindScene(instance.m_slot.m_spawner.m_scene);
+    return scene != nullptr ? scene->CloseControllerInput(instance)
+                            : ScenePolytreeControllerResultCode::StaleHandle;
+}
+
+ScenePolytreeControllerResultCode
+ScenePolytreeSystemComponent::DestroyControllersImmediately(InstanceHandle instance) {
+    AZStd::scoped_lock lock(m_mutex);
+    Internal::SceneInstance *scene = FindScene(instance.m_slot.m_spawner.m_scene);
+    const auto result = scene != nullptr ? scene->DetachControllers(instance)
+                                         : ScenePolytreeControllerResultCode::StaleHandle;
+    RefreshTickConnection();
+    return result;
+}
+
 void ScenePolytreeSystemComponent::OnGameEntitiesStarted() {
     // O3DE emits this before its asynchronous root Spawnable has necessarily activated entities.
     // Collection closes in OnRootSpawnableReady instead.
@@ -386,8 +527,8 @@ void ScenePolytreeSystemComponent::Enqueue(Command command) {
 void ScenePolytreeSystemComponent::DrainCommands() {
     std::vector<Command> commands;
     commands.swap(m_commands);
-    std::ranges::for_each(commands, [&](const Command &command) {
-        std::visit([&](const auto &typed) { Process(typed); }, command);
+    std::ranges::for_each(commands, [&](Command &command) {
+        std::visit([&](auto &typed) { Process(typed); }, command);
     });
 }
 
@@ -449,6 +590,33 @@ void ScenePolytreeSystemComponent::Process(const ReleaseSlotCommand &command) {
     const auto result = scene != nullptr ? scene->ReleaseSlot(command.m_slot)
                                          : ScenePolytreeResultCode::SceneNotFound;
     Complete(command.m_command, command.m_completionEntity, SceneCommandType::ReleaseSlot, result);
+}
+
+void ScenePolytreeSystemComponent::Process(AttachControllersCommand &command) {
+    Internal::SceneInstance *scene = FindScene(command.m_instance.m_slot.m_spawner.m_scene);
+    const auto resolveFactory = [&](ScenePolytreeControllerTypeId typeId) {
+        const auto found = std::ranges::find_if(m_controllerFactories, [&](const auto &entry) {
+            return entry.m_token.m_typeId == typeId;
+        });
+        return found != m_controllerFactories.end()
+                   ? found->m_factory
+                   : AZStd::shared_ptr<const ScenePolytreeControllerFactory>{};
+    };
+    const auto result =
+        scene != nullptr
+            ? scene->AttachControllers(command.m_instance, AZStd::move(command.m_declarations),
+                                       resolveFactory)
+            : ScenePolytreeResultCode::SceneNotFound;
+    Complete(command.m_command, command.m_completionEntity, SceneCommandType::AttachControllers,
+             result);
+}
+
+void ScenePolytreeSystemComponent::Process(const DetachControllersCommand &command) {
+    Internal::SceneInstance *scene = FindScene(command.m_instance.m_slot.m_spawner.m_scene);
+    const auto detached = scene != nullptr ? scene->DetachControllers(command.m_instance)
+                                           : ScenePolytreeControllerResultCode::StaleHandle;
+    Complete(command.m_command, command.m_completionEntity, SceneCommandType::DetachControllers,
+             MapControllerResult(detached));
 }
 
 void ScenePolytreeSystemComponent::Process(const ActiveCommand &command) {

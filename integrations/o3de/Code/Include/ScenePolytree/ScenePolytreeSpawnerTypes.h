@@ -43,6 +43,12 @@ enum class SpawnError : AZ::u8 {
     CompetingTransformParent,
     Cancelled,
     CleanupFailed,
+    ControllerFactoryNotFound,
+    InvalidControllerConfiguration,
+    ControllerTargetNotFound,
+    CrossInstanceControllerTarget,
+    ControllerWriteConflict,
+    ControllerConstructionFailed,
 };
 
 enum class DespawnError : AZ::u8 {

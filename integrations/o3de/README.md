@@ -30,7 +30,9 @@ repository's `scene-polytree::motion` target. Generic repository builds do not l
   a unique lease; result-bearing command submissions return a command ID and notify their target
   entity only after the system has executed the queued operation with its final typed result.
 - Each scene uses a fixed 60 Hz step, bounded four-step catch-up, and tick order
-  `AZ::TICK_GAME + 1`.
+  `AZ::TICK_GAME + 1`. For every available step the system advances persistent motion, evaluates
+  hierarchy transforms, and finally synchronizes changed O3DE entities. Only behavior types that
+  explicitly opt into continuous execution receive a fixed-step callback.
 - Same-tick evaluations accumulate ordered `changed_nodes` batches and synchronize their union
   directly with `SetWorldTM`. If direct-batch lifetime is lost after an error,
   `changed_transform_nodes_since` remains the revision-token fallback.
@@ -85,16 +87,107 @@ pre-ready, shutdown, stale-handle, and no-capacity failures. Successful spawn no
 only after reset, placement, O3DE insertion, exact Transform-hierarchy validation, and binding have
 completed. During pre-insertion, the spawner captures the authored local hierarchy, applies final
 world placement, and detaches O3DE Transform parents so ScenePolytree remains the single transform
-authority. Successful despawn notifications occur only after unbind, O3DE removal, reset, and
-release have completed.
+authority. Successful despawn notifications occur only after controller input closure and
+destruction, unbind, O3DE removal, reset, and release have completed.
 
 `InstanceHandle` wraps the partition's `SlotHandle` and adds only a spawner-lifetime generation.
 Cancellation succeeds until the pre-insertion callback atomically commits. Deactivation advances
-that generation, cancels safe pre-commit callbacks, initiates entity and logical-slot cleanup, and
-disconnects callback buses so late completions are harmless. The spawner never subscribes to
-TickBus and contains no controller discovery or behavior assignment. A future behavior API can
-resolve any inferred hierarchy-path binding and drive unrestricted transforms without changing
-Prefab authoring or topology extraction.
+that generation, cancels safe pre-commit callbacks, destroys attached controllers before the
+logical slot is touched, initiates entity and logical-slot cleanup, and disconnects callback buses
+so late completions are harmless. The spawner never subscribes to TickBus.
+
+## Prefab-owned behaviors and authored node targets
+
+A feature Gem supplies its own component that derives from both `AZ::Component` and
+`ScenePolytreeBehaviorProvider`. Include `ScenePolytreeBehaviorProvider` in the `AZ_COMPONENT`
+base list so AZ RTTI can discover the interface. Attach that component to the Prefab root that owns
+the behavior. A Windmill Gem therefore places its Windmill behavior component on the Windmill
+root. The rotor pivot is a node the Windmill controls, not the owner of the Windmill behavior.
+
+The component stores behavior-specific reflected authoring data, but it does not tick or write an
+O3DE transform. `CopyScenePolytreeControllerDeclaration` returns:
+
+- a stable declaration name and registered controller type ID;
+- an immutable clone of configuration derived from `ScenePolytreeControllerConfiguration`; and
+- semantic targets derived from the component's reflected Prefab-local entity references, such as
+  `Rotor` mapped to the Windmill's rotor-pivot entity.
+
+During spawn, ScenePolytree discovers providers in the spawned Prefab only. O3DE's Spawnable
+cloning remaps each reflected target reference independently for every instance. ScenePolytree
+then verifies that every target belongs to that spawned instance and resolves it through the
+instance's binding table. A Prefab with no provider follows the existing behaviorless fast path.
+The spawner has no behavior field and cannot replace, append, disable, or redirect a Prefab's
+internal behavior.
+
+The target mechanism is engine plumbing for a Prefab-specific behavior; it does not require a
+generic behavior component per operation. The Windmill Gem can define one Windmill behavior,
+author its `Rotor` reference in the Windmill Prefab, and use shared math internally. The spawner
+does not attach a generic ConstantRotation behavior or choose which Windmill node it affects.
+
+## Behavior libraries, lifecycle, and events
+
+A controller library registers a `ScenePolytreeControllerFactory` through
+`ScenePolytreeControllerRegistry`. Registration is keyed by `ScenePolytreeControllerTypeId` and
+returns a generation-bearing token; duplicate types are rejected, and a factory cannot unregister
+while any scene still owns that type. Registration and construction are cold-path operations.
+
+The factory creates one `ScenePolytreeControllerBatch` per behavior type per scene, not one
+heap-owned polymorphic object per spawned instance. `CreateController` is the one-shot
+`self.start` equivalent: it receives the owning instance, the behavior's resolved authored
+targets, and a scoped command sink. It adds compact instance state and may set persistent linear or
+angular velocity on the `Rotor` target exactly once. All start commands are accumulated and
+applied only after every behavior binding constructs successfully.
+
+The command sink is also passed to `SubmitInput`, which is the cold event/intent entry point. A
+Windmill Gem can store the returned public handle and submit a new angular velocity when wind
+speed changes. That event writes the new persistent motion state once; the Windmill behavior is
+not called while the rotor continues to turn.
+
+`HasRunningControllers` is an explicit continuous-execution subscription, analogous to Wozzits
+`frame.update`. ScenePolytree calls `FixedStepBatch` only for a type that returns true. Constant
+motion behaviors return false. Fixed simulation steps still occur while persistent motion is
+active, because the engine must integrate velocity, but no behavior virtual call or EBus/TickBus
+dispatch occurs for those steps.
+
+The scoped command sink permits local transform reads/writes, linear and angular velocity, and
+motion stop against validated authored target tokens. It exposes neither O3DE entities nor
+`SetWorldTM`. The generic hot path reuses motion-update and evaluation workspaces.
+
+Gameplay obtains a public handle with `ScenePolytreeControllerRequests::FindController(instance,
+declarationId)` and submits a controller-specific `ScenePolytreeControllerInput` through
+`SubmitControllerInput`. The central runtime validates the instance, public controller generation,
+and batch state, then refreshes scene tick eligibility. No raw controller pointer is returned.
+Input closes before detach; late input returns `InputClosed`, and destroyed or superseded handles
+return `StaleHandle`. Script-facing code may wrap this cold intent API, but it cannot enter the hot
+node update or transform projection path.
+
+## Behavior failures and lifetime
+
+Controller attachment occurs only after exact logical binding succeeds, and spawn success is held
+until every declaration has been validated and constructed. Missing factories, invalid
+configuration, missing targets, cross-instance targets, write conflicts, and construction failure
+map to distinct `SpawnError` and `ScenePolytreeResultCode` values. Attachment is transactional:
+created batch states and target ownership are rolled back before the normal unbind, O3DE despawn,
+reset, and release cleanup sequence.
+
+The successful lifetime is:
+
+```text
+logical slot bound
+    -> root-owned behavior declarations copied and authored node targets resolved
+    -> one-shot self.start construction commands applied
+    -> instance becomes Active
+    -> engine advances persistent motion
+    -> later behavior events may replace persistent motion state
+    -> input closes
+    -> controller states and unused batches are destroyed
+    -> logical slot unbinds
+    -> O3DE entities despawn
+```
+
+Immediate component deactivation performs the same controller-before-slot ordering. Public
+controller tokens are generated independently of reusable batch-state indices, so destroying and
+recreating a batch cannot make an earlier handle valid again.
 
 ## Projection and correction
 

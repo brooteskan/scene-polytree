@@ -1,6 +1,9 @@
 set(FILES
     Code/Include/ScenePolytree/ScenePolytreeBus.h
     Code/Include/ScenePolytree/ScenePolytreeComponent.h
+    Code/Include/ScenePolytree/ScenePolytreeController.h
+    Code/Include/ScenePolytree/ScenePolytreeControllerBus.h
+    Code/Include/ScenePolytree/ScenePolytreeControllerTypes.h
     Code/Include/ScenePolytree/ScenePolytreeSpawnerBus.h
     Code/Include/ScenePolytree/ScenePolytreeSpawnerComponent.h
     Code/Include/ScenePolytree/ScenePolytreeSpawnerTypes.h

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <ScenePolytree/ScenePolytreeControllerTypes.h>
 #include <ScenePolytree/ScenePolytreeSpawnerTypes.h>
 
 #include <AzCore/Component/ComponentBus.h>
@@ -33,10 +34,10 @@ using ScenePolytreeSpawnerNotificationBus = AZ::EBus<ScenePolytreeSpawnerNotific
 namespace Internal {
 class ScenePolytreeSpawnerAsyncNotifications : public AZ::ComponentBus {
   public:
-    virtual void
-    OnScenePolytreeSpawnCompleted(AZ::u32 spawnerGeneration, SpawnRequestId request,
-                                  AZ::u32 ticketId, SpawnError error,
-                                  AZStd::vector<ScenePolytreeEntityBinding> bindings) = 0;
+    virtual void OnScenePolytreeSpawnCompleted(
+        AZ::u32 spawnerGeneration, SpawnRequestId request, AZ::u32 ticketId, SpawnError error,
+        AZStd::vector<ScenePolytreeEntityBinding> bindings,
+        AZStd::vector<ScenePolytreeControllerDeclaration> declarations) = 0;
     virtual void OnScenePolytreeDespawnCompleted(AZ::u32 spawnerGeneration, SpawnRequestId request,
                                                  AZ::u32 ticketId) = 0;
 };

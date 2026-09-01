@@ -3,6 +3,7 @@
 #include "SceneInstance.h"
 
 #include <ScenePolytree/ScenePolytreeBus.h>
+#include <ScenePolytree/ScenePolytreeControllerBus.h>
 #include <ScenePolytree/ScenePolytreeTypeIds.h>
 
 #include <AzCore/Component/Component.h>
@@ -22,6 +23,9 @@ class ScenePolytreeSystemComponent final
       public AZ::TickBus::Handler,
       public ScenePolytreeRequestBus::Handler,
       public ScenePolytreeRegistrationRequests,
+      public ScenePolytreeControllerRegistry,
+      public ScenePolytreeControllerRequests,
+      public ScenePolytreeControllerLifecycleRequests,
       public AzFramework::GameEntityContextEventBus::Handler,
       public AzFramework::RootSpawnableNotificationBus::Handler {
   public:
@@ -67,6 +71,25 @@ class ScenePolytreeSystemComponent final
                    const ScenePolytreePrefabRegistrationDescriptor &descriptor) override;
     void UnregisterPrefab(RegistrationToken token) override;
 
+    ScenePolytreeControllerFactoryRegistrationResult RegisterControllerFactory(
+        AZStd::shared_ptr<const ScenePolytreeControllerFactory> factory) override;
+    ScenePolytreeControllerResultCode
+    UnregisterControllerFactory(ScenePolytreeControllerFactoryRegistrationToken token) override;
+    ScenePolytreeControllerLookupResult
+    FindController(InstanceHandle instance, const AZ::Name &declarationId) const override;
+    ScenePolytreeControllerResultCode
+    SubmitControllerInput(ScenePolytreeControllerHandle controller,
+                          const ScenePolytreeControllerInput &input) override;
+    SceneCommandSubmission
+    SubmitAttachControllers(InstanceHandle instance,
+                            AZStd::vector<ScenePolytreeControllerDeclaration> declarations,
+                            AZ::EntityId completionEntity) override;
+    SceneCommandSubmission SubmitDetachControllers(InstanceHandle instance,
+                                                   AZ::EntityId completionEntity) override;
+    ScenePolytreeControllerResultCode CloseControllerInput(InstanceHandle instance) override;
+    ScenePolytreeControllerResultCode
+    DestroyControllersImmediately(InstanceHandle instance) override;
+
     void OnGameEntitiesStarted() override;
     void OnGameEntitiesReset() override;
     void OnRootSpawnableReady(AZ::Data::Asset<AzFramework::Spawnable> rootSpawnable,
@@ -110,6 +133,17 @@ class ScenePolytreeSystemComponent final
         SceneCommandId m_command;
         AZ::EntityId m_completionEntity;
     };
+    struct AttachControllersCommand {
+        InstanceHandle m_instance;
+        AZStd::vector<ScenePolytreeControllerDeclaration> m_declarations;
+        SceneCommandId m_command;
+        AZ::EntityId m_completionEntity;
+    };
+    struct DetachControllersCommand {
+        InstanceHandle m_instance;
+        SceneCommandId m_command;
+        AZ::EntityId m_completionEntity;
+    };
     struct ActiveCommand {
         SceneHandle m_scene;
         bool m_active{};
@@ -119,7 +153,8 @@ class ScenePolytreeSystemComponent final
     };
     using Command = std::variant<CreateCommand, DestroyCommand, PlaceSlotCommand, BindSlotCommand,
                                  UnbindSlotCommand, ResetSlotCommand, ReleaseSlotCommand,
-                                 ActiveCommand, CorrectionCommand>;
+                                 AttachControllersCommand, DetachControllersCommand, ActiveCommand,
+                                 CorrectionCommand>;
 
     enum class SceneLife : AZ::u8 { Pending, Alive, Destroying };
     struct SceneEntry {
@@ -139,6 +174,11 @@ class ScenePolytreeSystemComponent final
         ScenePolytreePrefabRegistrationDescriptor m_descriptor;
     };
 
+    struct RegisteredControllerFactory {
+        ScenePolytreeControllerFactoryRegistrationToken m_token;
+        AZStd::shared_ptr<const ScenePolytreeControllerFactory> m_factory;
+    };
+
     [[nodiscard]] Internal::SceneInstance *FindScene(SceneHandle scene);
     [[nodiscard]] const Internal::SceneInstance *FindScene(SceneHandle scene) const;
     [[nodiscard]] bool AcceptsCommands(SceneHandle scene) const;
@@ -151,6 +191,8 @@ class ScenePolytreeSystemComponent final
     void Process(const UnbindSlotCommand &command);
     void Process(const ResetSlotCommand &command);
     void Process(const ReleaseSlotCommand &command);
+    void Process(AttachControllersCommand &command);
+    void Process(const DetachControllersCommand &command);
     void Process(const ActiveCommand &command);
     void Process(const CorrectionCommand &command);
     void Complete(SceneCommandId command, AZ::EntityId completionEntity, SceneCommandType type,
@@ -162,9 +204,11 @@ class ScenePolytreeSystemComponent final
     std::vector<Command> m_commands;
     AZStd::vector<RegisteredSceneEntity> m_registeredSceneEntities;
     AZStd::vector<PendingPrefabRegistration> m_pendingPrefabRegistrations;
+    AZStd::vector<RegisteredControllerFactory> m_controllerFactories;
     AZ::u64 m_nextSceneId{1};
     AZ::u64 m_nextRegistrationId{1};
     AZ::u64 m_nextCommandId{1};
+    AZ::u32 m_nextControllerFactoryGeneration{1};
     bool m_collectionClosed{};
 };
 } // namespace ScenePolytree
