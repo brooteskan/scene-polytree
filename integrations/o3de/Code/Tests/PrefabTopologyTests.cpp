@@ -1,26 +1,45 @@
 #include "PrefabTopology.h"
 
-#include <ScenePolytree/ScenePolytreePrefabNodeComponent.h>
-
+#include <AzCore/Asset/AssetManager.h>
 #include <AzCore/Name/NameDictionary.h>
 #include <AzFramework/Components/TransformComponent.h>
+#include <AzFramework/Spawnable/SpawnableAssetHandler.h>
 #include <AzTest/AzTest.h>
 
 namespace ScenePolytree::Tests {
 namespace {
 class ScenePolytreeTestEnvironment final : public ::testing::Environment {
   public:
-    void SetUp() override { AZ::NameDictionary::Create(); }
-    void TearDown() override { AZ::NameDictionary::Destroy(); }
+    void SetUp() override {
+        AZ::NameDictionary::Create();
+        if (!AZ::Data::AssetManager::IsReady()) {
+            AZ::Data::AssetManager::Descriptor descriptor;
+            AZ::Data::AssetManager::Create(descriptor);
+            m_ownsAssetManager = true;
+        }
+        m_spawnableHandler = AZStd::make_unique<AzFramework::SpawnableAssetHandler>();
+        AZ::Data::AssetManager::Instance().RegisterHandler(m_spawnableHandler.get(),
+                                                           azrtti_typeid<AzFramework::Spawnable>());
+    }
+    void TearDown() override {
+        AZ::Data::AssetManager::Instance().UnregisterHandler(m_spawnableHandler.get());
+        m_spawnableHandler.reset();
+        if (m_ownsAssetManager) {
+            AZ::Data::AssetManager::Destroy();
+        }
+        AZ::NameDictionary::Destroy();
+    }
+
+  private:
+    AZStd::unique_ptr<AzFramework::SpawnableAssetHandler> m_spawnableHandler;
+    bool m_ownsAssetManager{};
 };
 
 [[maybe_unused]] auto *const ScenePolytreeEnvironment =
     ::testing::AddGlobalTestEnvironment(new ScenePolytreeTestEnvironment());
 
-[[nodiscard]] ScenePolytreeNodeDescriptor Node(const char *id, const char *parent,
-                                               ScenePolytreeJointType joint) {
-    return {AZ::Name(id), AZ::Name(parent), ScenePolytreeNodeType::Transform, joint,
-            AZ::Transform::CreateIdentity()};
+[[nodiscard]] ScenePolytreeNodeDescriptor Node(const char *id, const char *parent) {
+    return {AZ::Name(id), AZ::Name(parent), AZ::Transform::CreateIdentity()};
 }
 } // namespace
 
@@ -28,35 +47,41 @@ class ScenePolytreePrefabTopologyTests : public ::testing::Test {};
 
 TEST_F(ScenePolytreePrefabTopologyTests, ExtractsLogicalTopologyFromSpawnableEntities) {
     AzFramework::Spawnable fixture;
-    auto root = AZStd::make_unique<AZ::Entity>("RootEntity");
+    auto root = AZStd::make_unique<AZ::Entity>("Root/Entity");
     auto *rootTransform = root->CreateComponent<AzFramework::TransformComponent>();
     rootTransform->SetLocalTM(AZ::Transform::CreateTranslation(AZ::Vector3(1.0f, 2.0f, 3.0f)));
-    root->AddComponent(aznew ScenePolytreePrefabNodeComponent(AZ::Name("Root"), AZ::Name(),
-                                                              ScenePolytreeJointType::None));
+    const AZ::EntityId rootId = root->GetId();
     fixture.GetEntities().push_back(AZStd::move(root));
 
-    auto child = AZStd::make_unique<AZ::Entity>("ChildEntity");
+    auto child = AZStd::make_unique<AZ::Entity>("Child%Entity#1");
     auto *childTransform = child->CreateComponent<AzFramework::TransformComponent>();
-    childTransform->SetLocalTM(AZ::Transform::CreateTranslation(AZ::Vector3::CreateAxisZ()));
-    child->AddComponent(aznew ScenePolytreePrefabNodeComponent(AZ::Name("Child"), AZ::Name("Root"),
-                                                               ScenePolytreeJointType::Fixed));
+    const AZ::Transform childLocal = AZ::Transform::CreateFromQuaternionAndTranslation(
+        AZ::Quaternion::CreateFromEulerAnglesRadians(AZ::Vector3(0.3f, -0.2f, 0.7f)),
+        AZ::Vector3(4.0f, 5.0f, 6.0f));
+    childTransform->SetLocalTM(childLocal);
+    childTransform->SetParent(rootId);
+    const AZ::EntityId childId = child->GetId();
     fixture.GetEntities().push_back(AZStd::move(child));
+
+    fixture.GetEntities().push_back(AZStd::make_unique<AZ::Entity>("NonTransformData"));
 
     auto result = Internal::ExtractPrefabTopology(fixture);
     ASSERT_TRUE(result.IsSuccess());
     ASSERT_EQ(result.m_nodes.size(), 2);
-    EXPECT_EQ(result.m_nodes[0].m_bindingId, AZ::Name("Root"));
+    ASSERT_EQ(result.m_entities.size(), 2);
+    EXPECT_EQ(result.m_nodes[0].m_bindingId, AZ::Name("Root%2FEntity"));
+    EXPECT_EQ(result.m_entities[0], rootId);
     EXPECT_TRUE(
         result.m_nodes[0].m_initialLocal.GetTranslation().IsClose(AZ::Vector3(1.0f, 2.0f, 3.0f)));
-    EXPECT_EQ(result.m_nodes[1].m_parentBindingId, AZ::Name("Root"));
+    EXPECT_EQ(result.m_nodes[1].m_bindingId, AZ::Name("Root%2FEntity/Child%25Entity#1"));
+    EXPECT_EQ(result.m_nodes[1].m_parentBindingId, AZ::Name("Root%2FEntity"));
+    EXPECT_TRUE(result.m_nodes[1].m_initialLocal.IsClose(childLocal));
+    EXPECT_EQ(result.m_entities[1], childId);
 }
 
 TEST_F(ScenePolytreePrefabTopologyTests, NormalizesMultipleRootsBeforeTheirChildren) {
     auto result = Internal::ValidateAndNormalizeTopology(
-        {Node("ChildB", "RootB", ScenePolytreeJointType::Fixed),
-         Node("RootB", "", ScenePolytreeJointType::None),
-         Node("ChildA", "RootA", ScenePolytreeJointType::Yaw),
-         Node("RootA", "", ScenePolytreeJointType::None)});
+        {Node("ChildB", "RootB"), Node("RootB", ""), Node("ChildA", "RootA"), Node("RootA", "")});
     ASSERT_TRUE(result.IsSuccess());
     ASSERT_EQ(result.m_nodes.size(), 4);
     EXPECT_EQ(result.m_nodes[0].m_bindingId, AZ::Name("RootA"));
@@ -65,37 +90,36 @@ TEST_F(ScenePolytreePrefabTopologyTests, NormalizesMultipleRootsBeforeTheirChild
     EXPECT_EQ(result.m_nodes[3].m_bindingId, AZ::Name("ChildB"));
 }
 
-TEST_F(ScenePolytreePrefabTopologyTests, RejectsMissingAndDuplicateMetadata) {
+TEST_F(ScenePolytreePrefabTopologyTests, RejectsEmptyAndDuplicateTopology) {
     EXPECT_EQ(Internal::ValidateAndNormalizeTopology({}).m_failure.m_code,
-              ScenePolytreeResultCode::MissingTopologyMetadata);
-    EXPECT_EQ(
-        Internal::ValidateAndNormalizeTopology({Node("Root", "", ScenePolytreeJointType::None),
-                                                Node("Root", "", ScenePolytreeJointType::None)})
-            .m_failure.m_code,
-        ScenePolytreeResultCode::DuplicateBindingId);
+              ScenePolytreeResultCode::EmptyPrefabHierarchy);
+    EXPECT_EQ(Internal::ValidateAndNormalizeTopology({Node("Root", ""), Node("Root", "")})
+                  .m_failure.m_code,
+              ScenePolytreeResultCode::DuplicateBindingId);
 }
 
 TEST_F(ScenePolytreePrefabTopologyTests, RejectsDanglingParentsAndCycles) {
-    EXPECT_EQ(Internal::ValidateAndNormalizeTopology(
-                  {Node("Child", "Absent", ScenePolytreeJointType::Fixed)})
-                  .m_failure.m_code,
+    EXPECT_EQ(Internal::ValidateAndNormalizeTopology({Node("Child", "Absent")}).m_failure.m_code,
               ScenePolytreeResultCode::DanglingParent);
     EXPECT_EQ(
-        Internal::ValidateAndNormalizeTopology({Node("A", "B", ScenePolytreeJointType::Fixed),
-                                                Node("B", "A", ScenePolytreeJointType::Fixed)})
-            .m_failure.m_code,
+        Internal::ValidateAndNormalizeTopology({Node("A", "B"), Node("B", "A")}).m_failure.m_code,
         ScenePolytreeResultCode::Cycle);
 }
 
-TEST_F(ScenePolytreePrefabTopologyTests, RejectsInvalidRootAndChildJointContracts) {
-    EXPECT_EQ(
-        Internal::ValidateAndNormalizeTopology({Node("Root", "", ScenePolytreeJointType::Fixed)})
-            .m_failure.m_code,
-        ScenePolytreeResultCode::UnsupportedJointType);
-    EXPECT_EQ(Internal::ValidateAndNormalizeTopology(
-                  {Node("Root", "", ScenePolytreeJointType::None),
-                   Node("Child", "Root", ScenePolytreeJointType::None)})
-                  .m_failure.m_code,
-              ScenePolytreeResultCode::UnsupportedJointType);
+TEST_F(ScenePolytreePrefabTopologyTests, RejectsDuplicateSiblingHierarchyPaths) {
+    AzFramework::Spawnable fixture;
+    auto root = AZStd::make_unique<AZ::Entity>("Root");
+    root->CreateComponent<AzFramework::TransformComponent>();
+    const AZ::EntityId rootId = root->GetId();
+    fixture.GetEntities().push_back(AZStd::move(root));
+    std::ranges::for_each(std::views::iota(0, 2), [&](int) {
+        auto child = AZStd::make_unique<AZ::Entity>("Pivot");
+        auto *transform = child->CreateComponent<AzFramework::TransformComponent>();
+        transform->SetParent(rootId);
+        fixture.GetEntities().push_back(AZStd::move(child));
+    });
+
+    EXPECT_EQ(Internal::ExtractPrefabTopology(fixture).m_failure.m_code,
+              ScenePolytreeResultCode::DuplicateBindingId);
 }
 } // namespace ScenePolytree::Tests

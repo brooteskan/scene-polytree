@@ -2,12 +2,11 @@
 
 namespace ScenePolytree {
 ScenePolytreeModule::ScenePolytreeModule() {
-    m_descriptors.insert(m_descriptors.end(),
-                         {
-                             ScenePolytreeSystemComponent::CreateDescriptor(),
-                             ScenePolytreeComponent::CreateDescriptor(),
-                             ScenePolytreePrefabNodeComponent::CreateDescriptor(),
-                         });
+    m_descriptors.insert(m_descriptors.end(), {
+                                                  ScenePolytreeSystemComponent::CreateDescriptor(),
+                                                  ScenePolytreeComponent::CreateDescriptor(),
+                                                  ScenePolytreeSpawnerComponent::CreateDescriptor(),
+                                              });
 }
 
 AZ::ComponentTypeList ScenePolytreeModule::GetRequiredSystemComponents() const {

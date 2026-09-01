@@ -44,41 +44,41 @@ int main()
     static_assert(PolytreeTopology<RuntimeTopology>);
 
     MutableTopology topology;
-    const auto hull_result = insert_root(topology, std::uint32_t{10});
-    if (!hull_result)
+    const auto root_result = insert_root(topology, std::uint32_t{10});
+    if (!root_result)
     {
         return 1;
     }
-    const auto hull = hull_result.value();
-    const auto turret_result = insert_child(
+    const auto root = root_result.value();
+    const auto intermediate_result = insert_child(
         topology,
-        hull,
+        root,
         std::uint32_t{20},
         std::uint32_t{100});
-    if (!turret_result)
+    if (!intermediate_result)
     {
         return 2;
     }
-    const auto turret = turret_result.value();
-    const auto gun_result = insert_child(
+    const auto intermediate = intermediate_result.value();
+    const auto leaf_result = insert_child(
         topology,
-        turret,
+        intermediate,
         std::uint32_t{30},
         std::uint32_t{200});
-    if (!gun_result)
+    if (!leaf_result)
     {
         return 3;
     }
-    const auto gun = gun_result.value();
+    const auto leaf = leaf_result.value();
 
     scene_polytree::basic_scene authoring_scene{
         std::move(topology),
         fake_scene_state{7}};
     if (node_count(authoring_scene.topology()) != 3
         || edge_count(authoring_scene.topology()) != 2
-        || parent(authoring_scene.topology(), hull) != INVALID_STABLE_NODE
-        || parent(authoring_scene.topology(), turret) != hull
-        || parent(authoring_scene.topology(), gun) != turret
+        || parent(authoring_scene.topology(), root) != INVALID_STABLE_NODE
+        || parent(authoring_scene.topology(), intermediate) != root
+        || parent(authoring_scene.topology(), leaf) != intermediate
         || authoring_scene.state().revision != 7)
     {
         return 4;
@@ -91,15 +91,15 @@ int main()
         return 5;
     }
     const auto frozen_revision = first_freeze->identities.source_revision();
-    const auto runtime_hull = first_freeze->identities.runtime_handle(hull);
-    const auto runtime_turret = first_freeze->identities.runtime_handle(turret);
-    const auto runtime_gun = first_freeze->identities.runtime_handle(gun);
-    if (runtime_hull != 0u
-        || runtime_turret != 1u
-        || runtime_gun != 2u
-        || first_freeze->identities.authoring_id(0u) != hull
-        || first_freeze->identities.authoring_id(1u) != turret
-        || first_freeze->identities.authoring_id(2u) != gun)
+    const auto runtime_root = first_freeze->identities.runtime_handle(root);
+    const auto runtime_intermediate = first_freeze->identities.runtime_handle(intermediate);
+    const auto runtime_leaf = first_freeze->identities.runtime_handle(leaf);
+    if (runtime_root != 0u
+        || runtime_intermediate != 1u
+        || runtime_leaf != 2u
+        || first_freeze->identities.authoring_id(0u) != root
+        || first_freeze->identities.authoring_id(1u) != intermediate
+        || first_freeze->identities.authoring_id(2u) != leaf)
     {
         return 6;
     }
@@ -110,10 +110,10 @@ int main()
     const auto& tree = runtime_scene.topology().polytree;
     if (node_count(tree) != 3
         || edge_count(tree) != 2
-        || parent(tree, *runtime_hull) != INVALID_NODE
-        || parent(tree, *runtime_turret) != *runtime_hull
-        || parent(tree, *runtime_gun) != *runtime_turret
-        || depth(tree, *runtime_gun) != 2
+        || parent(tree, *runtime_root) != INVALID_NODE
+        || parent(tree, *runtime_intermediate) != *runtime_root
+        || parent(tree, *runtime_leaf) != *runtime_intermediate
+        || depth(tree, *runtime_leaf) != 2
         || runtime_scene.state().revision != 7)
     {
         return 7;
@@ -123,10 +123,10 @@ int main()
     if (plan.node_count() != 3
         || plan.level_count() != 3
         || plan.roots.size() != 1
-        || plan.roots[0] != *runtime_hull
-        || plan.reverse_topological_order[0] != *runtime_gun
+        || plan.roots[0] != *runtime_root
+        || plan.reverse_topological_order[0] != *runtime_leaf
         || plan.dependency_level(1).size() != 1
-        || plan.dependency_level(1)[0] != *runtime_turret)
+        || plan.dependency_level(1)[0] != *runtime_intermediate)
     {
         return 8;
     }
@@ -145,12 +145,12 @@ int main()
         return 10;
     }
 
-    if (!detach_to_root(authoring_scene.topology(), turret, 0u))
+    if (!detach_to_root(authoring_scene.topology(), intermediate, 0u))
     {
         return 11;
     }
     if (frozen_revision == revision(authoring_scene.topology())
-        || first_freeze->identities.runtime_handle(turret) != 1u)
+        || first_freeze->identities.runtime_handle(intermediate) != 1u)
     {
         return 12;
     }
@@ -159,9 +159,9 @@ int main()
     if (!second_freeze
         || second_freeze->identities.source_revision()
             != revision(authoring_scene.topology())
-        || second_freeze->identities.runtime_handle(turret) != 0u
-        || second_freeze->identities.runtime_handle(gun) != 1u
-        || second_freeze->identities.runtime_handle(hull) != 2u
+        || second_freeze->identities.runtime_handle(intermediate) != 0u
+        || second_freeze->identities.runtime_handle(leaf) != 1u
+        || second_freeze->identities.runtime_handle(root) != 2u
         || !std::ranges::equal(
             roots(second_freeze->topology.polytree),
             std::array{0u, 2u}))

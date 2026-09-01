@@ -51,56 +51,56 @@ struct rigid_policy {
     [[nodiscard]] bool is_stationary(const motion::motion_state<vector3, vector3> &state) noexcept;
 };
 
-enum class articulated_node : std::uint8_t {
+enum class hierarchy_node : std::uint8_t {
     root,
     yaw_pivot,
     pitch_pivot,
 };
 
-enum class articulated_joint : std::uint8_t {
+enum class hierarchy_joint : std::uint8_t {
     yaw,
     pitch,
 };
 
-struct articulated_asset {
+struct hierarchy_asset {
     rigid_pose root;
     rigid_pose yaw_pivot{{0.0, 0.0, 1.0}, {}};
     rigid_pose pitch_pivot{{0.0, 1.0, 0.25}, {}};
 };
 
-struct articulated_instance {
+struct hierarchy_instance {
     wz::core::graph::StableNodeId root;
     wz::core::graph::StableNodeId yaw;
     wz::core::graph::StableNodeId pitch;
 };
 
-struct runtime_articulated_instance {
+struct runtime_hierarchy_instance {
     wz::core::graph::NodeHandle root{wz::core::graph::INVALID_NODE};
     wz::core::graph::NodeHandle yaw{wz::core::graph::INVALID_NODE};
     wz::core::graph::NodeHandle pitch{wz::core::graph::INVALID_NODE};
 };
 
-using authoring_scene = basic_authoring_scene<articulated_node, articulated_joint, rigid_pose>;
-using runtime_scene = basic_runtime_scene<articulated_node, articulated_joint, rigid_pose>;
+using authoring_scene = basic_authoring_scene<hierarchy_node, hierarchy_joint, rigid_pose>;
+using runtime_scene = basic_runtime_scene<hierarchy_node, hierarchy_joint, rigid_pose>;
 using active_set = motion::active_motion_set<vector3, vector3>;
 
-[[nodiscard]] articulated_instance instantiate_articulation(authoring_scene &scene,
-                                                            const articulated_asset &asset,
+[[nodiscard]] hierarchy_instance instantiate_hierarchy(authoring_scene &scene,
+                                                            const hierarchy_asset &asset,
                                                             rigid_pose spawn_pose);
-[[nodiscard]] runtime_articulated_instance resolve_articulation(const runtime_scene &scene,
-                                                                articulated_instance instance);
+[[nodiscard]] runtime_hierarchy_instance resolve_hierarchy(const runtime_scene &scene,
+                                                                hierarchy_instance instance);
 
-struct motion_command {
+struct motion_update {
     double forward_speed{};
     double root_yaw_rate{};
     double yaw_rate{};
     double pitch_rate{};
 
-    friend constexpr bool operator==(const motion_command &, const motion_command &) = default;
+    friend constexpr bool operator==(const motion_update &, const motion_update &) = default;
 };
 
 [[nodiscard]] motion::motion_error apply_command(active_set &active,
-                                                 runtime_articulated_instance instance,
-                                                 const motion_command &command,
+                                                 runtime_hierarchy_instance instance,
+                                                 const motion_update &command,
                                                  rigid_policy &policy);
 } // namespace scene_polytree::benchmarks::fixture

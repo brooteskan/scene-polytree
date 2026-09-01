@@ -83,56 +83,88 @@ SlotResult ScenePolytreeSystemComponent::ReserveSlot(SpawnerHandle spawner) {
 
 ScenePolytreeResultCode ScenePolytreeSystemComponent::PlaceSlot(SlotHandle slot,
                                                                 const AZ::Transform &rootWorld) {
+    return SubmitPlaceSlot(slot, rootWorld, AZ::EntityId{}).m_code;
+}
+
+SceneCommandSubmission
+ScenePolytreeSystemComponent::SubmitPlaceSlot(SlotHandle slot, const AZ::Transform &rootWorld,
+                                              AZ::EntityId completionEntity) {
     AZStd::scoped_lock lock(m_mutex);
     if (!AcceptsCommands(slot.m_spawner.m_scene)) {
-        return ScenePolytreeResultCode::SceneNotFound;
+        return {ScenePolytreeResultCode::SceneNotFound, {}};
     }
     if (!rootWorld.IsFinite()) {
-        return ScenePolytreeResultCode::InvalidTransform;
+        return {ScenePolytreeResultCode::InvalidTransform, {}};
     }
-    Enqueue(PlaceSlotCommand{slot, rootWorld});
-    return ScenePolytreeResultCode::Success;
+    const SceneCommandId command{m_nextCommandId++};
+    Enqueue(PlaceSlotCommand{slot, rootWorld, command, completionEntity});
+    return {ScenePolytreeResultCode::Success, command};
 }
 
 ScenePolytreeResultCode
 ScenePolytreeSystemComponent::BindSlot(SlotHandle slot,
                                        const AZStd::vector<ScenePolytreeEntityBinding> &bindings) {
+    return SubmitBindSlot(slot, bindings, AZ::EntityId{}).m_code;
+}
+
+SceneCommandSubmission ScenePolytreeSystemComponent::SubmitBindSlot(
+    SlotHandle slot, const AZStd::vector<ScenePolytreeEntityBinding> &bindings,
+    AZ::EntityId completionEntity) {
     AZStd::scoped_lock lock(m_mutex);
     if (!AcceptsCommands(slot.m_spawner.m_scene)) {
-        return ScenePolytreeResultCode::SceneNotFound;
+        return {ScenePolytreeResultCode::SceneNotFound, {}};
     }
     if (bindings.empty()) {
-        return ScenePolytreeResultCode::InvalidBinding;
+        return {ScenePolytreeResultCode::InvalidBinding, {}};
     }
-    Enqueue(BindSlotCommand{slot, bindings});
-    return ScenePolytreeResultCode::Success;
+    const SceneCommandId command{m_nextCommandId++};
+    Enqueue(BindSlotCommand{slot, bindings, command, completionEntity});
+    return {ScenePolytreeResultCode::Success, command};
 }
 
 ScenePolytreeResultCode ScenePolytreeSystemComponent::UnbindSlot(SlotHandle slot) {
+    return SubmitUnbindSlot(slot, AZ::EntityId{}).m_code;
+}
+
+SceneCommandSubmission
+ScenePolytreeSystemComponent::SubmitUnbindSlot(SlotHandle slot, AZ::EntityId completionEntity) {
     AZStd::scoped_lock lock(m_mutex);
     if (!AcceptsCommands(slot.m_spawner.m_scene)) {
-        return ScenePolytreeResultCode::SceneNotFound;
+        return {ScenePolytreeResultCode::SceneNotFound, {}};
     }
-    Enqueue(UnbindSlotCommand{slot});
-    return ScenePolytreeResultCode::Success;
+    const SceneCommandId command{m_nextCommandId++};
+    Enqueue(UnbindSlotCommand{slot, command, completionEntity});
+    return {ScenePolytreeResultCode::Success, command};
 }
 
 ScenePolytreeResultCode ScenePolytreeSystemComponent::ResetSlot(SlotHandle slot) {
+    return SubmitResetSlot(slot, AZ::EntityId{}).m_code;
+}
+
+SceneCommandSubmission
+ScenePolytreeSystemComponent::SubmitResetSlot(SlotHandle slot, AZ::EntityId completionEntity) {
     AZStd::scoped_lock lock(m_mutex);
     if (!AcceptsCommands(slot.m_spawner.m_scene)) {
-        return ScenePolytreeResultCode::SceneNotFound;
+        return {ScenePolytreeResultCode::SceneNotFound, {}};
     }
-    Enqueue(ResetSlotCommand{slot});
-    return ScenePolytreeResultCode::Success;
+    const SceneCommandId command{m_nextCommandId++};
+    Enqueue(ResetSlotCommand{slot, command, completionEntity});
+    return {ScenePolytreeResultCode::Success, command};
 }
 
 ScenePolytreeResultCode ScenePolytreeSystemComponent::ReleaseSlot(SlotHandle slot) {
+    return SubmitReleaseSlot(slot, AZ::EntityId{}).m_code;
+}
+
+SceneCommandSubmission
+ScenePolytreeSystemComponent::SubmitReleaseSlot(SlotHandle slot, AZ::EntityId completionEntity) {
     AZStd::scoped_lock lock(m_mutex);
     if (!AcceptsCommands(slot.m_spawner.m_scene)) {
-        return ScenePolytreeResultCode::SceneNotFound;
+        return {ScenePolytreeResultCode::SceneNotFound, {}};
     }
-    Enqueue(ReleaseSlotCommand{slot});
-    return ScenePolytreeResultCode::Success;
+    const SceneCommandId command{m_nextCommandId++};
+    Enqueue(ReleaseSlotCommand{slot, command, completionEntity});
+    return {ScenePolytreeResultCode::Success, command};
 }
 
 NodeResult ScenePolytreeSystemComponent::ResolveNode(SlotHandle slot,
@@ -385,35 +417,38 @@ void ScenePolytreeSystemComponent::Process(const DestroyCommand &command) {
 }
 
 void ScenePolytreeSystemComponent::Process(const PlaceSlotCommand &command) {
-    if (Internal::SceneInstance *scene = FindScene(command.m_slot.m_spawner.m_scene)) {
-        (void)scene->PlaceSlot(command.m_slot, command.m_rootWorld);
-    }
+    Internal::SceneInstance *scene = FindScene(command.m_slot.m_spawner.m_scene);
+    const auto result = scene != nullptr ? scene->PlaceSlot(command.m_slot, command.m_rootWorld)
+                                         : ScenePolytreeResultCode::SceneNotFound;
+    Complete(command.m_command, command.m_completionEntity, SceneCommandType::PlaceSlot, result);
 }
 
 void ScenePolytreeSystemComponent::Process(const BindSlotCommand &command) {
-    if (Internal::SceneInstance *scene = FindScene(command.m_slot.m_spawner.m_scene)) {
-        const auto result = scene->BindSlot(command.m_slot, command.m_bindings);
-        AZ_Error("ScenePolytree", result == ScenePolytreeResultCode::Success,
-                 "Rejected an invalid shared-scene slot binding.");
-    }
+    Internal::SceneInstance *scene = FindScene(command.m_slot.m_spawner.m_scene);
+    const auto result = scene != nullptr ? scene->BindSlot(command.m_slot, command.m_bindings)
+                                         : ScenePolytreeResultCode::SceneNotFound;
+    Complete(command.m_command, command.m_completionEntity, SceneCommandType::BindSlot, result);
 }
 
 void ScenePolytreeSystemComponent::Process(const UnbindSlotCommand &command) {
-    if (Internal::SceneInstance *scene = FindScene(command.m_slot.m_spawner.m_scene)) {
-        (void)scene->UnbindSlot(command.m_slot);
-    }
+    Internal::SceneInstance *scene = FindScene(command.m_slot.m_spawner.m_scene);
+    const auto result = scene != nullptr ? scene->UnbindSlot(command.m_slot)
+                                         : ScenePolytreeResultCode::SceneNotFound;
+    Complete(command.m_command, command.m_completionEntity, SceneCommandType::UnbindSlot, result);
 }
 
 void ScenePolytreeSystemComponent::Process(const ResetSlotCommand &command) {
-    if (Internal::SceneInstance *scene = FindScene(command.m_slot.m_spawner.m_scene)) {
-        (void)scene->ResetSlot(command.m_slot);
-    }
+    Internal::SceneInstance *scene = FindScene(command.m_slot.m_spawner.m_scene);
+    const auto result = scene != nullptr ? scene->ResetSlot(command.m_slot)
+                                         : ScenePolytreeResultCode::SceneNotFound;
+    Complete(command.m_command, command.m_completionEntity, SceneCommandType::ResetSlot, result);
 }
 
 void ScenePolytreeSystemComponent::Process(const ReleaseSlotCommand &command) {
-    if (Internal::SceneInstance *scene = FindScene(command.m_slot.m_spawner.m_scene)) {
-        (void)scene->ReleaseSlot(command.m_slot);
-    }
+    Internal::SceneInstance *scene = FindScene(command.m_slot.m_spawner.m_scene);
+    const auto result = scene != nullptr ? scene->ReleaseSlot(command.m_slot)
+                                         : ScenePolytreeResultCode::SceneNotFound;
+    Complete(command.m_command, command.m_completionEntity, SceneCommandType::ReleaseSlot, result);
 }
 
 void ScenePolytreeSystemComponent::Process(const ActiveCommand &command) {
@@ -431,6 +466,15 @@ void ScenePolytreeSystemComponent::Process(const CorrectionCommand &command) {
                 : scene->CorrectWorld(command.m_correction.m_node,
                                       command.m_correction.m_transform);
         AZ_Error("ScenePolytree", accepted, "Rejected an invalid scene correction command.");
+    }
+}
+
+void ScenePolytreeSystemComponent::Complete(SceneCommandId command, AZ::EntityId completionEntity,
+                                            SceneCommandType type, ScenePolytreeResultCode result) {
+    if (command.IsValid() && completionEntity.IsValid()) {
+        ScenePolytreeCommandNotificationBus::Event(
+            completionEntity, &ScenePolytreeCommandNotifications::OnScenePolytreeCommandCompleted,
+            command, type, result);
     }
 }
 

@@ -3,7 +3,7 @@
 #include "ScenePolytreeSystemComponent.h"
 
 #include <ScenePolytree/ScenePolytreeComponent.h>
-#include <ScenePolytree/ScenePolytreePrefabNodeComponent.h>
+#include <ScenePolytree/ScenePolytreeSpawnerComponent.h>
 #include <ScenePolytree/ScenePolytreeTypeIds.h>
 
 #include <AzCore/Memory/SystemAllocator.h>

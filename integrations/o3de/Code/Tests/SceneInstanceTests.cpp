@@ -10,10 +10,8 @@ namespace ScenePolytree::Tests {
 namespace {
 [[nodiscard]] AZStd::vector<ScenePolytreeNodeDescriptor> MakeTopology() {
     return {
-        {AZ::Name("Root"), AZ::Name(), ScenePolytreeNodeType::Transform,
-         ScenePolytreeJointType::None, AZ::Transform::CreateIdentity()},
-        {AZ::Name("Child"), AZ::Name("Root"), ScenePolytreeNodeType::Transform,
-         ScenePolytreeJointType::Fixed,
+        {AZ::Name("Root"), AZ::Name(), AZ::Transform::CreateIdentity()},
+        {AZ::Name("Child"), AZ::Name("Root"),
          AZ::Transform::CreateTranslation(AZ::Vector3::CreateAxisZ())},
     };
 }
@@ -52,7 +50,8 @@ TEST(ScenePolytreeSceneInstanceTests, SharedPartitionsReserveAndResolveIsolatedS
     EXPECT_EQ(scene->GetStatistics().m_reservedSlotCount, 2);
 }
 
-TEST(ScenePolytreeSceneInstanceTests, PlacementBindingAndGenericCorrectionProjectTransforms) {
+TEST(ScenePolytreeSceneInstanceTests,
+     PlacementBindingAndUnrestrictedSixDegreeCorrectionProjectTransforms) {
     ScenePolytreeSceneDescriptor descriptor;
     descriptor.m_partitions = {{31, 1, MakeTopology()}};
     auto scene = Internal::SceneInstance::Create(descriptor);
@@ -86,8 +85,10 @@ TEST(ScenePolytreeSceneInstanceTests, PlacementBindingAndGenericCorrectionProjec
 
     const NodeResult child = scene->ResolveNode(slot.m_handle, AZ::Name("Child"));
     ASSERT_TRUE(child.IsSuccess());
-    EXPECT_TRUE(scene->CorrectLocal(
-        child.m_handle, AZ::Transform::CreateTranslation(AZ::Vector3(0.0f, 0.0f, 2.0f))));
+    const AZ::Transform unrestrictedLocal = AZ::Transform::CreateFromQuaternionAndTranslation(
+        AZ::Quaternion::CreateFromEulerAnglesRadians(AZ::Vector3(0.2f, -0.4f, 0.7f)),
+        AZ::Vector3(3.0f, -2.0f, 5.0f));
+    EXPECT_TRUE(scene->CorrectLocal(child.m_handle, unrestrictedLocal));
     std::vector<WrittenTransform> corrected;
     scene->Advance(std::chrono::nanoseconds::zero(),
                    [&](AZ::EntityId entity, const AZ::Transform &world) {
@@ -95,9 +96,7 @@ TEST(ScenePolytreeSceneInstanceTests, PlacementBindingAndGenericCorrectionProjec
                    });
     ASSERT_EQ(corrected.size(), 1);
     ASSERT_NE(FindWritten(corrected, AZ::EntityId(1002)), nullptr);
-    EXPECT_TRUE(FindWritten(corrected, AZ::EntityId(1002))
-                    ->GetTranslation()
-                    .IsClose(AZ::Vector3(10.0f, 20.0f, 32.0f)));
+    EXPECT_TRUE(FindWritten(corrected, AZ::EntityId(1002))->IsClose(placement * unrestrictedLocal));
 }
 
 TEST(ScenePolytreeSceneInstanceTests, DuplicateEntityBindingsAreRejectedAcrossPartitions) {
@@ -120,6 +119,20 @@ TEST(ScenePolytreeSceneInstanceTests, DuplicateEntityBindingsAreRejectedAcrossPa
     };
     EXPECT_EQ(scene->BindSlot(first.m_handle, bindings), ScenePolytreeResultCode::Success);
     EXPECT_EQ(scene->BindSlot(second.m_handle, bindings), ScenePolytreeResultCode::InvalidBinding);
+}
+
+TEST(ScenePolytreeSceneInstanceTests, BindRequiresTheExactRegisteredTopology) {
+    ScenePolytreeSceneDescriptor descriptor;
+    descriptor.m_partitions = {{43, 1, MakeTopology()}};
+    auto scene = Internal::SceneInstance::Create(descriptor);
+    ASSERT_NE(scene, nullptr);
+    const SlotResult slot = scene->ReserveSlot({SceneHandle{100}, 43, 1});
+    ASSERT_TRUE(slot.IsSuccess());
+
+    EXPECT_EQ(scene->BindSlot(slot.m_handle, {{AZ::Name("Root"), AZ::EntityId(2101),
+                                               AZ::Transform::CreateIdentity()}}),
+              ScenePolytreeResultCode::InvalidBinding);
+    EXPECT_EQ(scene->GetStatistics().m_boundSlotCount, 0);
 }
 
 TEST(ScenePolytreeSceneInstanceTests, ReleasedSlotsInvalidateOldHandlesAndCanBeReused) {

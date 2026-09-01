@@ -17,15 +17,6 @@ enum class ScenePolytreeLifecycle : AZ::u8 {
     Destroying,
 };
 
-enum class ScenePolytreeNodeType : AZ::u8 { Transform };
-
-enum class ScenePolytreeJointType : AZ::u8 {
-    None,
-    Fixed,
-    Yaw,
-    Pitch,
-};
-
 enum class ScenePolytreeResultCode : AZ::u8 {
     Success,
     SceneNotFound,
@@ -33,12 +24,10 @@ enum class ScenePolytreeResultCode : AZ::u8 {
     RegistrationClosed,
     InvalidPrefab,
     AssetLoadFailed,
-    MissingTopologyMetadata,
+    EmptyPrefabHierarchy,
     DuplicateBindingId,
     DanglingParent,
     Cycle,
-    UnsupportedNodeType,
-    UnsupportedJointType,
     InvalidTransform,
     ZeroCapacity,
     EmptyScene,
@@ -49,6 +38,29 @@ enum class ScenePolytreeResultCode : AZ::u8 {
     SlotUnavailable,
     InvalidBinding,
     ConstructionFailed,
+    InvalidConfiguration,
+};
+
+enum class SceneCommandType : AZ::u8 {
+    PlaceSlot,
+    BindSlot,
+    UnbindSlot,
+    ResetSlot,
+    ReleaseSlot,
+};
+
+struct SceneCommandId {
+    AZ::u64 m_value{};
+    [[nodiscard]] bool IsValid() const noexcept { return m_value != 0; }
+    friend bool operator==(const SceneCommandId &, const SceneCommandId &) = default;
+};
+
+struct SceneCommandSubmission {
+    ScenePolytreeResultCode m_code{ScenePolytreeResultCode::Success};
+    SceneCommandId m_command;
+    [[nodiscard]] bool IsAccepted() const noexcept {
+        return m_code == ScenePolytreeResultCode::Success && m_command.IsValid();
+    }
 };
 
 struct ScenePolytreeFailure {
@@ -105,8 +117,6 @@ struct ScenePolytreeNodeDescriptor {
     AZ_TYPE_INFO(ScenePolytreeNodeDescriptor, "{BA10BBCA-AC1B-4EC7-8C3D-C5EF9386A90A}");
     AZ::Name m_bindingId;
     AZ::Name m_parentBindingId;
-    ScenePolytreeNodeType m_nodeType{ScenePolytreeNodeType::Transform};
-    ScenePolytreeJointType m_jointType{ScenePolytreeJointType::None};
     AZ::Transform m_initialLocal{AZ::Transform::CreateIdentity()};
 };
 
@@ -172,10 +182,6 @@ struct ResolvedScenePolytreeRegistration {
 namespace AZ {
 AZ_TYPE_INFO_SPECIALIZE(ScenePolytree::ScenePolytreeLifecycle,
                         "{15026EB7-CA72-476B-91D5-88467DA95029}");
-AZ_TYPE_INFO_SPECIALIZE(ScenePolytree::ScenePolytreeNodeType,
-                        "{CB4464DB-4EB4-4770-873F-4CB42AA192F3}");
-AZ_TYPE_INFO_SPECIALIZE(ScenePolytree::ScenePolytreeJointType,
-                        "{5122D2AD-6214-4FBA-A652-25314D534E10}");
 AZ_TYPE_INFO_SPECIALIZE(ScenePolytree::ScenePolytreeResultCode,
                         "{051E15A2-A957-4709-907E-CC5CC4DDA5A0}");
 } // namespace AZ

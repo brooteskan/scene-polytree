@@ -16,8 +16,8 @@ The issue #9 runner separates four costs:
 4. changed-node selection and engine-neutral target synchronization.
 
 Synthetic fixtures cover chains, wide trees, four-way balanced trees, and
-forests at 1,000, 10,000, and 100,000 nodes. Articulated fixtures cover 1, 32,
-256, 1,024, and 10,000 three-node articulations. Requested dirty and active ratios are
+forests at 1,000, 10,000, and 100,000 nodes. Hierarchy fixtures cover 1, 32,
+256, 1,024, and 10,000 three-node hierarchies. Requested dirty and active ratios are
 zero, sparse, medium, and full. A separate dirty-root case records descendant
 amplification: one changed root affects all 100,000 nodes in a chain, wide
 tree, or balanced tree, but only 341 nodes in the 100,000-node forest fixture.
@@ -80,7 +80,7 @@ themselves. Their value is the independent width exposed to a future executor.
 Steady fixed-step evaluation reuses all workspaces and performs no measured
 allocations.
 
-| 10,000 articulations / 30,000 nodes | Median | p95 |
+| 10,000 hierarchies / 30,000 nodes | Median | p95 |
 | --- | ---: | ---: |
 | Warm step, no active motion | 0.357 | 0.446 |
 | Warm step, 0.1% active | 0.273 | 0.404 |

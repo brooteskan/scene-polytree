@@ -8,10 +8,8 @@ namespace ScenePolytree::Tests {
 namespace {
 [[nodiscard]] ScenePolytreeSceneDescriptor MakeSharedSystemDescriptor() {
     ScenePolytreeSceneDescriptor descriptor;
-    descriptor.m_partitions = {{5,
-                                2,
-                                {{AZ::Name("Root"), AZ::Name(), ScenePolytreeNodeType::Transform,
-                                  ScenePolytreeJointType::None, AZ::Transform::CreateIdentity()}}}};
+    descriptor.m_partitions = {
+        {5, 2, {{AZ::Name("Root"), AZ::Name(), AZ::Transform::CreateIdentity()}}}};
     return descriptor;
 }
 
@@ -56,6 +54,25 @@ class CapturingRegistrationNotifications final
 
     RegistrationToken m_failedToken;
     ScenePolytreeFailure m_failure;
+};
+
+struct CompletedCommand {
+    SceneCommandId m_command;
+    SceneCommandType m_type;
+    ScenePolytreeResultCode m_result;
+};
+
+class CapturingCommandNotifications final : public ScenePolytreeCommandNotificationBus::Handler {
+  public:
+    explicit CapturingCommandNotifications(AZ::EntityId entity) { BusConnect(entity); }
+    ~CapturingCommandNotifications() override { BusDisconnect(); }
+
+    void OnScenePolytreeCommandCompleted(SceneCommandId command, SceneCommandType type,
+                                         ScenePolytreeResultCode result) override {
+        m_completed.push_back({command, type, result});
+    }
+
+    AZStd::vector<CompletedCommand> m_completed;
 };
 
 class ActiveSystem final {
@@ -135,8 +152,7 @@ TEST(ScenePolytreeSystemComponentTests, LevelComponentOwnsAndDestroysOneRuntimeS
     ActiveSystem activeSystem;
     ScenePolytreeComponentConfig configuration;
     configuration.m_permanentNodes = {
-        {AZ::Name("LevelRoot"), AZ::Name(), ScenePolytreeNodeType::Transform,
-         ScenePolytreeJointType::None, AZ::Transform::CreateIdentity()},
+        {AZ::Name("LevelRoot"), AZ::Name(), AZ::Transform::CreateIdentity()},
     };
     ScenePolytreeComponent component(configuration);
 
@@ -190,6 +206,58 @@ TEST(ScenePolytreeSystemComponentTests, MutationsAreQueuedUntilTheSystemTick) {
     EXPECT_FALSE(system.SetSceneActive(scene, true));
     system.OnTick(0.0f, AZ::ScriptTimePoint{});
     EXPECT_EQ(system.GetSceneStatistics(scene).m_nodeCount, 0);
+}
+
+TEST(ScenePolytreeSystemComponentTests,
+     ResultBearingCommandsCompleteOnlyAfterExecutionAndReportFinalFailures) {
+    ScenePolytreeSystemComponent system;
+    const SceneHandle scene = system.CreateScene(MakeSharedSystemDescriptor());
+    ASSERT_TRUE(scene.IsValid());
+    system.OnTick(0.0f, AZ::ScriptTimePoint{});
+    const SlotResult slot = system.ReserveSlot({scene, 5, 1});
+    ASSERT_TRUE(slot.IsSuccess());
+
+    const AZ::EntityId completionEntity(801);
+    CapturingCommandNotifications notifications(completionEntity);
+    const auto place = system.SubmitPlaceSlot(
+        slot.m_handle, AZ::Transform::CreateTranslation(AZ::Vector3::CreateAxisX()),
+        completionEntity);
+    ASSERT_TRUE(place.IsAccepted());
+    EXPECT_TRUE(notifications.m_completed.empty());
+    system.OnTick(0.0f, AZ::ScriptTimePoint{});
+
+    const auto bind = system.SubmitBindSlot(
+        slot.m_handle, {{AZ::Name("Root"), AZ::EntityId(802), AZ::Transform::CreateIdentity()}},
+        completionEntity);
+    ASSERT_TRUE(bind.IsAccepted());
+    system.OnTick(0.0f, AZ::ScriptTimePoint{});
+    const auto unbind = system.SubmitUnbindSlot(slot.m_handle, completionEntity);
+    ASSERT_TRUE(unbind.IsAccepted());
+    system.OnTick(0.0f, AZ::ScriptTimePoint{});
+    const auto reset = system.SubmitResetSlot(slot.m_handle, completionEntity);
+    ASSERT_TRUE(reset.IsAccepted());
+    system.OnTick(0.0f, AZ::ScriptTimePoint{});
+    const auto release = system.SubmitReleaseSlot(slot.m_handle, completionEntity);
+    ASSERT_TRUE(release.IsAccepted());
+    system.OnTick(0.0f, AZ::ScriptTimePoint{});
+
+    ASSERT_EQ(notifications.m_completed.size(), 5);
+    EXPECT_EQ(notifications.m_completed[0].m_type, SceneCommandType::PlaceSlot);
+    EXPECT_EQ(notifications.m_completed[1].m_type, SceneCommandType::BindSlot);
+    EXPECT_EQ(notifications.m_completed[2].m_type, SceneCommandType::UnbindSlot);
+    EXPECT_EQ(notifications.m_completed[3].m_type, SceneCommandType::ResetSlot);
+    EXPECT_EQ(notifications.m_completed[4].m_type, SceneCommandType::ReleaseSlot);
+    EXPECT_TRUE(std::ranges::all_of(notifications.m_completed, [](const auto &completed) {
+        return completed.m_result == ScenePolytreeResultCode::Success;
+    }));
+
+    const auto stale = system.SubmitResetSlot(slot.m_handle, completionEntity);
+    ASSERT_TRUE(stale.IsAccepted());
+    EXPECT_EQ(notifications.m_completed.size(), 5);
+    system.OnTick(0.0f, AZ::ScriptTimePoint{});
+    ASSERT_EQ(notifications.m_completed.size(), 6);
+    EXPECT_EQ(notifications.m_completed.back().m_command, stale.m_command);
+    EXPECT_EQ(notifications.m_completed.back().m_result, ScenePolytreeResultCode::StaleHandle);
 }
 
 TEST(ScenePolytreeSystemComponentTests, UsesTheDocumentedCentralTickOrder) {

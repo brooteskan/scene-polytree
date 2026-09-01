@@ -23,7 +23,7 @@ This order follows the measured bottlenecks:
 - a 100,000-node clean scene still spends 0.58 to 1.64 ms planning because the
   planner scans every node;
 - a 30,000-node sparse motion step spends roughly 0.27 to 0.81 ms even though
-  only 0.1% to 10% of actors move;
+  only 0.1% to 10% of instances move;
 - 30,000-node changed selection spends 0.12 to 0.16 ms before sparse writes;
   and
 - unordered sparse-vector lifecycle updates can cost hundreds of milliseconds,

@@ -64,7 +64,27 @@ state without introducing separate hierarchy semantics.
 
 ## O3DE
 
-The O3DE integration is an adapter. Project-local Gems may own a scene instance
-and synchronize selected results into O3DE. A deeper engine experiment may
-instead use the same core types nearer the transform system. Neither route
-changes the core's dependency on generic polytree algorithms.
+The O3DE integration is an adapter around one shared frozen forest. The system
+component is the sole TickBus handler and owns runtime scene instances. A
+level-authored scene component owns the scene handle and gathers generic
+Prefab topology/capacity registrations before the root Spawnable closes
+collection. Spawner components receive opaque partition handles only after the
+combined forest has built successfully.
+
+`ScenePolytreeSpawnerComponent` owns request state and one O3DE spawn ticket per
+live Prefab instance. It reserves dormant logical slots, resolves default or
+explicit placement, infers every logical node, parent, local transform, and
+hierarchy-path binding from the spawned entity container's Transform hierarchy,
+and waits for result-bearing scene command completions before reporting success.
+No ScenePolytree node component, pivot classification, or gameplay role metadata
+is involved. Instance identity is the shared `SlotHandle` plus a
+component-lifetime generation; no parallel slot identity or private forest
+exists.
+
+The lifecycle boundary is `Unused -> Reserved -> Spawning -> Active ->
+Despawning -> Unused`. Despawn and failure cleanup unbind, remove O3DE entities,
+reset logical state, and release the slot in order. Pre-insertion cancellation
+uses an atomic commit boundary, while late callbacks resolve only stable entity,
+request, ticket, and generation IDs. A deeper engine experiment may instead use
+the same core types nearer the transform system; neither route changes the
+core's dependency on generic polytree algorithms.

@@ -1,7 +1,9 @@
 set(FILES
     Code/Include/ScenePolytree/ScenePolytreeBus.h
     Code/Include/ScenePolytree/ScenePolytreeComponent.h
-    Code/Include/ScenePolytree/ScenePolytreePrefabNodeComponent.h
+    Code/Include/ScenePolytree/ScenePolytreeSpawnerBus.h
+    Code/Include/ScenePolytree/ScenePolytreeSpawnerComponent.h
+    Code/Include/ScenePolytree/ScenePolytreeSpawnerTypes.h
     Code/Include/ScenePolytree/ScenePolytreeTypeIds.h
     Code/Include/ScenePolytree/ScenePolytreeTypes.h
     Code/Source/AzTransformPolicy.cpp
@@ -11,7 +13,7 @@ set(FILES
     Code/Source/SceneInstance.cpp
     Code/Source/SceneInstance.h
     Code/Source/ScenePolytreeComponent.cpp
-    Code/Source/ScenePolytreePrefabNodeComponent.cpp
+    Code/Source/ScenePolytreeSpawnerComponent.cpp
     Code/Source/ScenePolytreeSystemComponent.cpp
     Code/Source/ScenePolytreeSystemComponent.h
 )

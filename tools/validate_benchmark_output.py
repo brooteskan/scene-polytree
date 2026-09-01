@@ -16,6 +16,7 @@ REQUIRED_MEASUREMENT_FIELDS = {
     "node_count",
     "edge_count",
     "depth",
+    "instance_count",
     "wall_ns",
     "allocation_count",
     "allocated_bytes",

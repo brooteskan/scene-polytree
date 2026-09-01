@@ -17,6 +17,9 @@
 #include <vector>
 
 namespace ScenePolytree::Internal {
+enum class TransformNodePayload : AZ::u8 { Transform };
+enum class TransformEdgePayload : AZ::u8 { Parent };
+
 struct StableNodeBinding {
     AZ::Name m_bindingId;
     wz::core::graph::StableNodeId m_node;
@@ -61,10 +64,10 @@ struct EntityTarget {
 class SceneInstance final {
   public:
     using AuthoringScene =
-        scene_polytree::basic_authoring_scene<ScenePolytreeNodeType, ScenePolytreeJointType,
+        scene_polytree::basic_authoring_scene<TransformNodePayload, TransformEdgePayload,
                                               AzTransformValue>;
     using RuntimeScene =
-        scene_polytree::basic_runtime_scene<ScenePolytreeNodeType, ScenePolytreeJointType,
+        scene_polytree::basic_runtime_scene<TransformNodePayload, TransformEdgePayload,
                                             AzTransformValue>;
     using ActiveSet = scene_polytree::motion::active_motion_set<AZ::Vector3, AZ::Vector3>;
     using TransformWriter = AZStd::function<void(AZ::EntityId, const AZ::Transform &)>;

@@ -188,7 +188,7 @@ scene_polytree.no_handwritten_loops
 ```
 
 The contract executable constructs and validates a real three-node
-hull-to-turret-to-gun hierarchy against the extracted packages. The policy
+root-to-intermediate-to-leaf hierarchy against the extracted packages. The policy
 entry scans scene-polytree C++ production, extension, integration, example,
 benchmark, and test sources for handwritten loop statements.
 

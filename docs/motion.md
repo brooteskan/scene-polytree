@@ -17,8 +17,8 @@ provide:
 - `is_stationary(state) noexcept`.
 
 This keeps vector, quaternion, units, damping, constraints, and coordinate
-system choices in the consumer. Player input, AI goals, and other intent are
-also consumer concerns: intent producers write equivalent motion-state updates
+system choices in the consumer. Player input, AI goals, and other update are
+also consumer concerns: update producers write equivalent motion-state updates
 rather than becoming alternate transform evaluators.
 
 ## Active storage
@@ -89,7 +89,7 @@ sequence. Standard allocation failures retain normal C++ exception behavior.
 
 ## Determinism boundaries
 
-For the same frozen topology, initial transform state, exact ordered intent
+For the same frozen topology, initial transform state, exact ordered update
 updates, fixed-step sequence, and motion/transform policies, the extension
 produces the same integration order, changed-node order, tick progression, and
 policy results. Active records are integrated in ascending `NodeHandle` order,
@@ -106,10 +106,10 @@ after the complete motion and transform evaluation succeeds.
 
 The library guarantees deterministic ordering, not cross-platform bitwise
 floating-point identity. A consumer that requires bitwise replay must supply
-policies and numeric types with that property and must keep external intent
+policies and numeric types with that property and must keep external update
 ordering deterministic. Coordinate conventions, damping, constraints,
 stationary thresholds, and velocity reference frames are likewise policy
-decisions. Intent updates and evaluation require external synchronization.
+decisions. Update updates and evaluation require external synchronization.
 
 ## Example
 
@@ -136,6 +136,6 @@ const auto result = scene_polytree::motion::advance_motion_scene(
     transform_workspace, motion, transforms);
 ```
 
-The benchmark runner exercises this API with a generic three-node articulation
+The benchmark runner exercises this API with a generic three-node hierarchy
 fixture. Its root, yaw pivot, and pitch pivot share one active set and one
 centralized fixed-step evaluation path.

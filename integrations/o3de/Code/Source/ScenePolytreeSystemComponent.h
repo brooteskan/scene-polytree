@@ -43,6 +43,16 @@ class ScenePolytreeSystemComponent final
     ScenePolytreeResultCode UnbindSlot(SlotHandle slot) override;
     ScenePolytreeResultCode ResetSlot(SlotHandle slot) override;
     ScenePolytreeResultCode ReleaseSlot(SlotHandle slot) override;
+    SceneCommandSubmission SubmitPlaceSlot(SlotHandle slot, const AZ::Transform &rootWorld,
+                                           AZ::EntityId completionEntity) override;
+    SceneCommandSubmission SubmitBindSlot(SlotHandle slot,
+                                          const AZStd::vector<ScenePolytreeEntityBinding> &bindings,
+                                          AZ::EntityId completionEntity) override;
+    SceneCommandSubmission SubmitUnbindSlot(SlotHandle slot,
+                                            AZ::EntityId completionEntity) override;
+    SceneCommandSubmission SubmitResetSlot(SlotHandle slot, AZ::EntityId completionEntity) override;
+    SceneCommandSubmission SubmitReleaseSlot(SlotHandle slot,
+                                             AZ::EntityId completionEntity) override;
     NodeResult ResolveNode(SlotHandle slot, const AZ::Name &bindingId) const override;
     bool SetSceneActive(SceneHandle scene, bool active) override;
     bool RequestCorrection(const SceneCorrection &correction) override;
@@ -76,19 +86,29 @@ class ScenePolytreeSystemComponent final
     struct PlaceSlotCommand {
         SlotHandle m_slot;
         AZ::Transform m_rootWorld{AZ::Transform::CreateIdentity()};
+        SceneCommandId m_command;
+        AZ::EntityId m_completionEntity;
     };
     struct BindSlotCommand {
         SlotHandle m_slot;
         AZStd::vector<ScenePolytreeEntityBinding> m_bindings;
+        SceneCommandId m_command;
+        AZ::EntityId m_completionEntity;
     };
     struct UnbindSlotCommand {
         SlotHandle m_slot;
+        SceneCommandId m_command;
+        AZ::EntityId m_completionEntity;
     };
     struct ResetSlotCommand {
         SlotHandle m_slot;
+        SceneCommandId m_command;
+        AZ::EntityId m_completionEntity;
     };
     struct ReleaseSlotCommand {
         SlotHandle m_slot;
+        SceneCommandId m_command;
+        AZ::EntityId m_completionEntity;
     };
     struct ActiveCommand {
         SceneHandle m_scene;
@@ -133,6 +153,8 @@ class ScenePolytreeSystemComponent final
     void Process(const ReleaseSlotCommand &command);
     void Process(const ActiveCommand &command);
     void Process(const CorrectionCommand &command);
+    void Complete(SceneCommandId command, AZ::EntityId completionEntity, SceneCommandType type,
+                  ScenePolytreeResultCode result);
     void RefreshTickConnection();
 
     mutable AZStd::recursive_mutex m_mutex;
@@ -142,6 +164,7 @@ class ScenePolytreeSystemComponent final
     AZStd::vector<PendingPrefabRegistration> m_pendingPrefabRegistrations;
     AZ::u64 m_nextSceneId{1};
     AZ::u64 m_nextRegistrationId{1};
+    AZ::u64 m_nextCommandId{1};
     bool m_collectionClosed{};
 };
 } // namespace ScenePolytree

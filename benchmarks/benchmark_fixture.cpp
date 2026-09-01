@@ -85,24 +85,24 @@ bool rigid_policy::is_stationary(const motion::motion_state<vector3, vector3> &s
     return state.linear_velocity == vector3{} && state.angular_velocity == vector3{};
 }
 
-articulated_instance instantiate_articulation(authoring_scene &scene,
-                                              const articulated_asset &asset,
+hierarchy_instance instantiate_hierarchy(authoring_scene &scene,
+                                              const hierarchy_asset &asset,
                                               rigid_pose spawn_pose) {
     const auto root =
-        scene.insert_root(articulated_node::root, compose_pose(spawn_pose, asset.root)).value();
+        scene.insert_root(hierarchy_node::root, compose_pose(spawn_pose, asset.root)).value();
     const auto yaw = scene
-                         .insert_child(root, articulated_node::yaw_pivot, articulated_joint::yaw,
+                         .insert_child(root, hierarchy_node::yaw_pivot, hierarchy_joint::yaw,
                                        asset.yaw_pivot)
                          .value();
     const auto pitch = scene
-                           .insert_child(yaw, articulated_node::pitch_pivot,
-                                         articulated_joint::pitch, asset.pitch_pivot)
+                           .insert_child(yaw, hierarchy_node::pitch_pivot,
+                                         hierarchy_joint::pitch, asset.pitch_pivot)
                            .value();
     return {root, yaw, pitch};
 }
 
-runtime_articulated_instance resolve_articulation(const runtime_scene &scene,
-                                                  articulated_instance instance) {
+runtime_hierarchy_instance resolve_hierarchy(const runtime_scene &scene,
+                                                  hierarchy_instance instance) {
     return {
         scene.identities().runtime_handle(instance.root).value(),
         scene.identities().runtime_handle(instance.yaw).value(),
@@ -110,8 +110,8 @@ runtime_articulated_instance resolve_articulation(const runtime_scene &scene,
     };
 }
 
-motion::motion_error apply_command(active_set &active, runtime_articulated_instance instance,
-                                   const motion_command &command, rigid_policy &policy) {
+motion::motion_error apply_command(active_set &active, runtime_hierarchy_instance instance,
+                                   const motion_update &command, rigid_policy &policy) {
     using update = motion::motion_update<vector3, vector3>;
     const std::array updates{
         update{instance.root,

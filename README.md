@@ -41,8 +41,10 @@ release, which resolves the matching algorithm package.
 - `scene-polytree::cpu-executor`: persistent CPU workers for the optional
   dependency-level transform overload. Link this target in addition to
   `scene-polytree::core` when using that overload.
-- `scene-polytree::o3de`: reserved for the optional O3DE Gem adapter; it will
-  not become the owner of scene topology.
+- `scene-polytree::o3de`: optional O3DE Gem adapter with a level-owned shared
+  forest, hierarchy-inferred Prefab topology, fixed-capacity partitions, and
+  asynchronous generation-safe Prefab spawning. It does not own a second scene
+  topology.
 
 The core transform evaluator caches subtree metadata over polytree's
 topological view. Local edits enter an exact dirty frontier; planning expands
@@ -93,7 +95,7 @@ partial-evaluation, lifetime, reparenting, and thread-safety semantics.
 
 ## Motion extension
 
-The motion extension keeps player/AI intent and engine math in consumer policy
+The motion extension keeps player/AI update and engine math in consumer policy
 while owning one fixed-step evaluation pipeline. Moving nodes are registered in
 deterministic handle order; stationary state is removed from the active set.
 Each successful tick integrates active local transforms and delegates all

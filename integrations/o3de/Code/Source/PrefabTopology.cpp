@@ -1,24 +1,177 @@
 #include "PrefabTopology.h"
 
-#include <ScenePolytree/ScenePolytreePrefabNodeComponent.h>
-
+#include <AzCore/Component/Entity.h>
+#include <AzCore/std/containers/unordered_map.h>
 #include <AzFramework/Components/TransformComponent.h>
 
 #include <algorithm>
 #include <functional>
+#include <limits>
 #include <ranges>
 
 namespace ScenePolytree::Internal {
 namespace {
+constexpr std::size_t NoParent = (std::numeric_limits<std::size_t>::max)();
+
+struct InferredNode {
+    const AZ::Entity *m_entity{};
+    AzFramework::TransformComponent *m_transform{};
+    std::size_t m_parent{NoParent};
+    std::size_t m_depth{};
+    AZStd::string m_path;
+};
+
 [[nodiscard]] bool NameLess(const AZ::Name &left, const AZ::Name &right) {
     return left.GetStringView() < right.GetStringView();
+}
+
+[[nodiscard]] AZStd::string EscapePathSegment(AZStd::string_view name) {
+    AZStd::string escaped;
+    escaped.reserve(name.size());
+    std::ranges::for_each(name, [&](char value) {
+        switch (value) {
+        case '%':
+            escaped += "%25";
+            break;
+        case '/':
+            escaped += "%2F";
+            break;
+        default:
+            escaped.push_back(value);
+            break;
+        }
+    });
+    return escaped;
+}
+
+[[nodiscard]] PrefabTopologyResult
+ExtractEntityHierarchy(const AZStd::vector<const AZ::Entity *> &entities) {
+    AZStd::vector<InferredNode> inferred;
+    inferred.reserve(entities.size());
+    AZStd::unordered_map<AZ::EntityId, std::size_t> byEntity;
+    ScenePolytreeResultCode entityFailure = ScenePolytreeResultCode::Success;
+
+    std::ranges::for_each(entities, [&](const AZ::Entity *entity) {
+        if (entity == nullptr) {
+            return;
+        }
+        auto *transform = const_cast<AzFramework::TransformComponent *>(
+            entity->FindComponent<AzFramework::TransformComponent>());
+        if (transform == nullptr) {
+            return;
+        }
+        const AZ::EntityId entityId = entity->GetId();
+        if (!entityId.IsValid() || byEntity.contains(entityId)) {
+            entityFailure = ScenePolytreeResultCode::InvalidBinding;
+            return;
+        }
+        if (!transform->GetLocalTM().IsFinite()) {
+            entityFailure = ScenePolytreeResultCode::InvalidTransform;
+            return;
+        }
+        byEntity.emplace(entityId, inferred.size());
+        inferred.push_back({entity, transform, NoParent, 0, {}});
+    });
+
+    if (entityFailure != ScenePolytreeResultCode::Success) {
+        return {{}, {}, {entityFailure}};
+    }
+    if (inferred.empty()) {
+        return {{}, {}, {ScenePolytreeResultCode::EmptyPrefabHierarchy}};
+    }
+
+    const auto indices = std::views::iota(std::size_t{}, inferred.size());
+    const auto dangling = std::ranges::find_if(indices, [&](std::size_t index) {
+        const AZ::EntityId parentId = inferred[index].m_transform->GetParentId();
+        return parentId.IsValid() && !byEntity.contains(parentId);
+    });
+    if (dangling != indices.end()) {
+        return {{},
+                {},
+                {ScenePolytreeResultCode::DanglingParent,
+                 {},
+                 {},
+                 AZ::Name(inferred[*dangling].m_entity->GetName())}};
+    }
+    std::ranges::for_each(indices, [&](std::size_t index) {
+        const AZ::EntityId parentId = inferred[index].m_transform->GetParentId();
+        if (parentId.IsValid()) {
+            inferred[index].m_parent = byEntity.find(parentId)->second;
+        }
+    });
+
+    AZStd::vector<AZ::u8> visitState(inferred.size());
+    ScenePolytreeResultCode pathFailure = ScenePolytreeResultCode::Success;
+    std::function<bool(std::size_t)> buildPath = [&](std::size_t index) {
+        if (visitState[index] == 1) {
+            pathFailure = ScenePolytreeResultCode::Cycle;
+            return false;
+        }
+        if (visitState[index] == 2) {
+            return true;
+        }
+        visitState[index] = 1;
+        const AZStd::string segment = EscapePathSegment(inferred[index].m_entity->GetName());
+        if (segment.empty()) {
+            pathFailure = ScenePolytreeResultCode::InvalidBinding;
+            return false;
+        }
+        if (inferred[index].m_parent == NoParent) {
+            inferred[index].m_path = segment;
+        } else {
+            if (!buildPath(inferred[index].m_parent)) {
+                return false;
+            }
+            inferred[index].m_depth = inferred[inferred[index].m_parent].m_depth + 1;
+            inferred[index].m_path = inferred[inferred[index].m_parent].m_path + "/" + segment;
+        }
+        visitState[index] = 2;
+        return true;
+    };
+
+    const auto invalidPath =
+        std::ranges::find_if(indices, [&](std::size_t index) { return !buildPath(index); });
+    if (invalidPath != indices.end()) {
+        return {
+            {}, {}, {pathFailure, {}, {}, AZ::Name(inferred[*invalidPath].m_entity->GetName())}};
+    }
+
+    std::ranges::sort(inferred, [](const InferredNode &left, const InferredNode &right) {
+        return left.m_depth != right.m_depth ? left.m_depth < right.m_depth
+                                             : left.m_path < right.m_path;
+    });
+    const auto duplicate = std::ranges::adjacent_find(
+        inferred, [](const InferredNode &left, const InferredNode &right) {
+            return left.m_path == right.m_path;
+        });
+    if (duplicate != inferred.end()) {
+        return {{},
+                {},
+                {ScenePolytreeResultCode::DuplicateBindingId, {}, {}, AZ::Name(duplicate->m_path)}};
+    }
+
+    PrefabTopologyResult result;
+    result.m_nodes.reserve(inferred.size());
+    result.m_entities.reserve(inferred.size());
+    std::ranges::for_each(inferred, [&](const InferredNode &node) {
+        const AZ::Name parent =
+            node.m_parent == NoParent
+                ? AZ::Name()
+                : AZ::Name(std::ranges::find_if(inferred, [&](const InferredNode &candidate) {
+                               return candidate.m_entity->GetId() ==
+                                      node.m_transform->GetParentId();
+                           })->m_path);
+        result.m_nodes.push_back({AZ::Name(node.m_path), parent, node.m_transform->GetLocalTM()});
+        result.m_entities.push_back(node.m_entity->GetId());
+    });
+    return result;
 }
 } // namespace
 
 PrefabTopologyResult
 ValidateAndNormalizeTopology(AZStd::vector<ScenePolytreeNodeDescriptor> nodes) {
     if (nodes.empty()) {
-        return {{}, {ScenePolytreeResultCode::MissingTopologyMetadata}};
+        return {{}, {}, {ScenePolytreeResultCode::EmptyPrefabHierarchy}};
     }
 
     const auto invalidNode = std::ranges::find_if(nodes, [](const auto &node) {
@@ -28,16 +181,7 @@ ValidateAndNormalizeTopology(AZStd::vector<ScenePolytreeNodeDescriptor> nodes) {
         const auto code = invalidNode->m_bindingId.IsEmpty()
                               ? ScenePolytreeResultCode::InvalidBinding
                               : ScenePolytreeResultCode::InvalidTransform;
-        return {{}, {code, {}, {}, invalidNode->m_bindingId}};
-    }
-
-    const auto unsupportedNode = std::ranges::find_if(nodes, [](const auto &node) {
-        return node.m_nodeType != ScenePolytreeNodeType::Transform;
-    });
-    if (unsupportedNode != nodes.end()) {
-        return {
-            {},
-            {ScenePolytreeResultCode::UnsupportedNodeType, {}, {}, unsupportedNode->m_bindingId}};
+        return {{}, {}, {code, {}, {}, invalidNode->m_bindingId}};
     }
 
     std::ranges::sort(nodes, [](const auto &left, const auto &right) {
@@ -48,21 +192,8 @@ ValidateAndNormalizeTopology(AZStd::vector<ScenePolytreeNodeDescriptor> nodes) {
             return left.m_bindingId == right.m_bindingId;
         });
     if (duplicate != nodes.end()) {
-        return {{}, {ScenePolytreeResultCode::DuplicateBindingId, {}, {}, duplicate->m_bindingId}};
-    }
-
-    const auto invalidJoint = std::ranges::find_if(nodes, [&](const auto &node) {
-        const bool root = node.m_parentBindingId.IsEmpty();
-        const bool supported = node.m_jointType == ScenePolytreeJointType::None ||
-                               node.m_jointType == ScenePolytreeJointType::Fixed ||
-                               node.m_jointType == ScenePolytreeJointType::Yaw ||
-                               node.m_jointType == ScenePolytreeJointType::Pitch;
-        return !supported || (root && node.m_jointType != ScenePolytreeJointType::None) ||
-               (!root && node.m_jointType == ScenePolytreeJointType::None);
-    });
-    if (invalidJoint != nodes.end()) {
-        return {{},
-                {ScenePolytreeResultCode::UnsupportedJointType, {}, {}, invalidJoint->m_bindingId}};
+        return {
+            {}, {}, {ScenePolytreeResultCode::DuplicateBindingId, {}, {}, duplicate->m_bindingId}};
     }
 
     const auto findNode = [&](const AZ::Name &bindingId) {
@@ -70,12 +201,14 @@ ValidateAndNormalizeTopology(AZStd::vector<ScenePolytreeNodeDescriptor> nodes) {
                                         &ScenePolytreeNodeDescriptor::m_bindingId);
     };
     const auto dangling = std::ranges::find_if(nodes, [&](const auto &node) {
-        return !node.m_parentBindingId.IsEmpty() &&
-               (findNode(node.m_parentBindingId) == nodes.end() ||
-                findNode(node.m_parentBindingId)->m_bindingId != node.m_parentBindingId);
+        if (node.m_parentBindingId.IsEmpty()) {
+            return false;
+        }
+        const auto parent = findNode(node.m_parentBindingId);
+        return parent == nodes.end() || parent->m_bindingId != node.m_parentBindingId;
     });
     if (dangling != nodes.end()) {
-        return {{}, {ScenePolytreeResultCode::DanglingParent, {}, {}, dangling->m_bindingId}};
+        return {{}, {}, {ScenePolytreeResultCode::DanglingParent, {}, {}, dangling->m_bindingId}};
     }
 
     AZStd::vector<AZ::u8> visitState(nodes.size());
@@ -98,7 +231,7 @@ ValidateAndNormalizeTopology(AZStd::vector<ScenePolytreeNodeDescriptor> nodes) {
     const auto cyclic =
         std::ranges::find_if(indices, [&](std::size_t index) { return !visit(index); });
     if (cyclic != indices.end()) {
-        return {{}, {ScenePolytreeResultCode::Cycle, {}, {}, nodes[*cyclic].m_bindingId}};
+        return {{}, {}, {ScenePolytreeResultCode::Cycle, {}, {}, nodes[*cyclic].m_bindingId}};
     }
 
     const auto lexicographicNodes = nodes;
@@ -125,29 +258,29 @@ ValidateAndNormalizeTopology(AZStd::vector<ScenePolytreeNodeDescriptor> nodes) {
                    ? depths[leftIndex] < depths[rightIndex]
                    : NameLess(left.m_bindingId, right.m_bindingId);
     });
-    return {AZStd::move(nodes), {}};
+    return {AZStd::move(nodes), {}, {}};
 }
 
 PrefabTopologyResult ExtractPrefabTopology(AzFramework::Spawnable &spawnable) {
-    AZStd::vector<ScenePolytreeNodeDescriptor> nodes;
-    AZ::Name missingTransformNode;
-    std::ranges::for_each(
-        spawnable.GetEntities(), [&](const AZStd::unique_ptr<AZ::Entity> &entity) {
-            auto *metadata = entity->FindComponent<ScenePolytreePrefabNodeComponent>();
-            auto *transform = entity->FindComponent<AzFramework::TransformComponent>();
-            if (metadata != nullptr && transform == nullptr) {
-                missingTransformNode = metadata->GetBindingId();
-            } else if (metadata != nullptr) {
-                nodes.push_back({metadata->GetBindingId(), metadata->GetParentBindingId(),
-                                 metadata->GetNodeType(), metadata->GetJointType(),
-                                 transform->GetLocalTM()});
-            }
-        });
+    AZStd::vector<const AZ::Entity *> entities;
+    entities.reserve(spawnable.GetEntities().size());
+    std::ranges::transform(spawnable.GetEntities(), std::back_inserter(entities),
+                           [](const auto &entity) { return entity.get(); });
+    return ExtractEntityHierarchy(entities);
+}
 
-    if (!missingTransformNode.IsEmpty()) {
-        return {{}, {ScenePolytreeResultCode::InvalidTransform, {}, {}, missingTransformNode}};
-    }
+PrefabTopologyResult ExtractPrefabTopology(AzFramework::SpawnableEntityContainerView entityView) {
+    AZStd::vector<const AZ::Entity *> entities;
+    entities.reserve(entityView.size());
+    std::ranges::copy(entityView, std::back_inserter(entities));
+    return ExtractEntityHierarchy(entities);
+}
 
-    return ValidateAndNormalizeTopology(AZStd::move(nodes));
+PrefabTopologyResult
+ExtractPrefabTopology(AzFramework::SpawnableConstEntityContainerView entityView) {
+    AZStd::vector<const AZ::Entity *> entities;
+    entities.reserve(entityView.size());
+    std::ranges::copy(entityView, std::back_inserter(entities));
+    return ExtractEntityHierarchy(entities);
 }
 } // namespace ScenePolytree::Internal

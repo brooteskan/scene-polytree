@@ -108,7 +108,7 @@ Scene implementation was deliberately not copied during Phase 1.
 | `tests/scene_graph/scene_graph_test_1.cpp` | `scene-polytree` contract tests | Compatibility evidence. Tests are to be re-expressed with package-local types and the no-handwritten-loops policy rather than copied literally. |
 
 The current `scene-polytree/tests/contracts_tests.cpp` is a narrow package
-wiring test for a real hull-to-turret-to-gun static hierarchy. It is not a
+wiring test for a real root-to-intermediate-to-leaf static hierarchy. It is not a
 replacement for the Wozzits scene behavior suite.
 
 ## Reverse consumers that stay outside the packages

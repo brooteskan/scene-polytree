@@ -2,7 +2,7 @@
     "gem_name": "ScenePolytree",
     "version": "0.1.0",
     "display_name": "Scene Polytree",
-    "summary": "Deterministic, data-oriented scene and articulated-motion integration for O3DE.",
+    "summary": "Deterministic, data-oriented scene and hierarchy-motion integration for O3DE.",
     "type": "Code",
     "canonical_tags": ["Gem"],
     "user_tags": ["Scene", "Simulation", "Gameplay"]

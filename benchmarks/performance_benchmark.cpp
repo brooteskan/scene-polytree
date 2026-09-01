@@ -223,7 +223,7 @@ struct measurement {
     std::string_view shape;
     std::string_view propagation_order{"not_applicable"};
     topology_metadata topology;
-    std::size_t actor_count{};
+    std::size_t instance_count{};
     std::size_t active_count{};
     std::size_t dirty_count{};
     std::size_t changed_count{};
@@ -335,7 +335,7 @@ void emit_measurement(const measurement &record) {
               << ",\"depth\":" << record.topology.depth
               << ",\"dependency_levels\":" << record.topology.dependency_levels
               << ",\"maximum_level_width\":" << record.topology.maximum_level_width
-              << ",\"actor_count\":" << record.actor_count
+              << ",\"instance_count\":" << record.instance_count
               << ",\"active_count\":" << record.active_count
               << ",\"dirty_count\":" << record.dirty_count
               << ",\"changed_count\":" << record.changed_count
@@ -548,12 +548,12 @@ void make_full_scan_reference_plan(
                                : std::vector<double>{0.0, 0.001, 0.1, 1.0};
 }
 
-[[nodiscard]] std::vector<std::size_t> actor_sizes(const options &configuration) {
+[[nodiscard]] std::vector<std::size_t> instance_sizes(const options &configuration) {
     return configuration.smoke ? std::vector<std::size_t>{4}
                                : std::vector<std::size_t>{1, 32, 256, 1'024, 10'000};
 }
 
-[[nodiscard]] std::vector<double> actor_ratios(const options &configuration) {
+[[nodiscard]] std::vector<double> instance_ratios(const options &configuration) {
     return configuration.smoke ? std::vector<double>{0.25, 1.0}
                                : std::vector<double>{0.0, 0.001, 0.1, 1.0};
 }
@@ -1070,83 +1070,83 @@ void run_transform_suite(const options &configuration) {
     });
 }
 
-struct articulated_fixture {
+struct hierarchy_fixture {
     fixture::authoring_scene authoring;
-    std::vector<fixture::articulated_instance> stable;
+    std::vector<fixture::hierarchy_instance> stable;
 };
 
-[[nodiscard]] articulated_fixture make_articulations(std::size_t actor_total) {
-    articulated_fixture fixture;
-    fixture.stable.reserve(actor_total);
-    const fixture::articulated_asset asset;
-    std::ranges::for_each(std::views::iota(std::size_t{}, actor_total),
+[[nodiscard]] hierarchy_fixture make_hierarchies(std::size_t instance_total) {
+    hierarchy_fixture fixture;
+    fixture.stable.reserve(instance_total);
+    const fixture::hierarchy_asset asset;
+    std::ranges::for_each(std::views::iota(std::size_t{}, instance_total),
                           [&](std::size_t index) {
-                              fixture.stable.push_back(fixture::instantiate_articulation(
+                              fixture.stable.push_back(fixture::instantiate_hierarchy(
                                   fixture.authoring, asset,
                                   {{static_cast<double>(index) * 4.0, 0.0, 0.0}, {}}));
                           });
     return fixture;
 }
 
-struct runtime_articulations {
+struct runtime_hierarchies {
     fixture::runtime_scene runtime;
-    std::vector<fixture::runtime_articulated_instance> instances;
+    std::vector<fixture::runtime_hierarchy_instance> instances;
 };
 
-[[nodiscard]] runtime_articulations freeze_articulations(articulated_fixture &fixture) {
+[[nodiscard]] runtime_hierarchies freeze_hierarchies(hierarchy_fixture &fixture) {
     wz::core::graph::FreezeWorkspace workspace;
     auto frozen = scene_polytree::freeze_scene(fixture.authoring, workspace);
     if (!frozen) {
-        throw std::runtime_error("articulation fixture freeze failed");
+        throw std::runtime_error("hierarchy fixture freeze failed");
     }
     auto runtime = std::move(frozen).value();
-    std::vector<fixture::runtime_articulated_instance> instances;
+    std::vector<fixture::runtime_hierarchy_instance> instances;
     instances.reserve(fixture.stable.size());
     std::ranges::transform(fixture.stable, std::back_inserter(instances),
-                           [&](fixture::articulated_instance instance) {
-                               return fixture::resolve_articulation(runtime, instance);
+                           [&](fixture::hierarchy_instance instance) {
+                               return fixture::resolve_hierarchy(runtime, instance);
                            });
     return {std::move(runtime), std::move(instances)};
 }
 
-void apply_actor_intent(fixture::active_set &active,
-                        std::span<const fixture::runtime_articulated_instance> instances,
-                        std::size_t active_actors, const fixture::motion_command &intent,
+void apply_instance_update(fixture::active_set &active,
+                        std::span<const fixture::runtime_hierarchy_instance> instances,
+                        std::size_t active_instances, const fixture::motion_update &update,
                         fixture::rigid_policy &policy) {
-    std::ranges::for_each(instances.first(active_actors), [&](const auto &instance) {
-        if (fixture::apply_command(active, instance, intent, policy) !=
+    std::ranges::for_each(instances.first(active_instances), [&](const auto &instance) {
+        if (fixture::apply_command(active, instance, update, policy) !=
             scene_polytree::motion::motion_error::none) {
-            throw std::runtime_error("articulation command update failed");
+            throw std::runtime_error("hierarchy command update failed");
         }
     });
 }
 
-void apply_actor_intent_order(fixture::active_set &active,
-                              std::span<const fixture::runtime_articulated_instance> instances,
+void apply_instance_update_order(fixture::active_set &active,
+                              std::span<const fixture::runtime_hierarchy_instance> instances,
                               std::span<const std::size_t> order,
-                              const fixture::motion_command &intent, fixture::rigid_policy &policy) {
+                              const fixture::motion_update &update, fixture::rigid_policy &policy) {
     std::ranges::for_each(order, [&](std::size_t index) {
-        if (fixture::apply_command(active, instances[index], intent, policy) !=
+        if (fixture::apply_command(active, instances[index], update, policy) !=
             scene_polytree::motion::motion_error::none) {
-            throw std::runtime_error("ordered articulation command update failed");
+            throw std::runtime_error("ordered hierarchy command update failed");
         }
     });
 }
 
 [[nodiscard]] std::vector<fixture::active_set::update_type>
-make_actor_intent_updates(std::span<const fixture::runtime_articulated_instance> instances,
+make_instance_updates(std::span<const fixture::runtime_hierarchy_instance> instances,
                           std::span<const std::size_t> order,
-                          const fixture::motion_command &intent) {
+                          const fixture::motion_update &update) {
     std::vector<fixture::active_set::update_type> updates;
     updates.reserve(order.size() * 3);
     std::ranges::for_each(order, [&](std::size_t index) {
         const auto instance = instances[index];
         updates.push_back({instance.root,
-                           {{0.0, intent.forward_speed, 0.0},
-                            {0.0, 0.0, intent.root_yaw_rate}}});
+                           {{0.0, update.forward_speed, 0.0},
+                            {0.0, 0.0, update.root_yaw_rate}}});
         updates.push_back(
-            {instance.yaw, {{}, {0.0, 0.0, intent.yaw_rate}}});
-        updates.push_back({instance.pitch, {{}, {intent.pitch_rate, 0.0, 0.0}}});
+            {instance.yaw, {{}, {0.0, 0.0, update.yaw_rate}}});
+        updates.push_back({instance.pitch, {{}, {update.pitch_rate, 0.0, 0.0}}});
     });
     return updates;
 }
@@ -1166,15 +1166,15 @@ make_actor_intent_updates(std::span<const fixture::runtime_articulated_instance>
     });
 }
 
-void run_motion_case(std::size_t actor_total, double active_ratio,
+void run_motion_case(std::size_t instance_total, double active_ratio,
                      const options &configuration) {
     std::ranges::for_each(std::views::iota(std::size_t{}, configuration.samples),
                           [&](std::size_t sample) {
-                              auto fixture = make_articulations(actor_total);
-                              auto frozen = freeze_articulations(fixture);
+                              auto fixture = make_hierarchies(instance_total);
+                              auto frozen = freeze_hierarchies(fixture);
                               fixture::rigid_policy policy;
                               initialize_world(frozen.runtime, policy);
-                              const auto active_actors = ratio_count(actor_total, active_ratio);
+                              const auto active_instances = ratio_count(instance_total, active_ratio);
                               fixture::active_set active{frozen.runtime.topology()};
                               fixture::active_set reverse_active{frozen.runtime.topology()};
                               fixture::active_set shuffled_active{frozen.runtime.topology()};
@@ -1182,33 +1182,33 @@ void run_motion_case(std::size_t actor_total, double active_ratio,
                               scene_polytree::motion::active_motion_update_workspace<
                                   fixture::vector3, fixture::vector3>
                                   batch_workspace;
-                              const fixture::motion_command moving{2.0, 0.25, -0.5, 0.125};
+                              const fixture::motion_update moving{2.0, 0.25, -0.5, 0.125};
                               const auto topology = describe_topology(frozen.runtime.topology());
-                              std::vector<std::size_t> ascending_order(active_actors);
+                              std::vector<std::size_t> ascending_order(active_instances);
                               std::iota(ascending_order.begin(), ascending_order.end(), 0);
                               auto descending_order = ascending_order;
                               std::ranges::reverse(descending_order);
                               auto shuffled_order = ascending_order;
                               std::mt19937_64 random{
-                                  configuration.seed ^ static_cast<std::uint64_t>(actor_total) ^
+                                  configuration.seed ^ static_cast<std::uint64_t>(instance_total) ^
                                   static_cast<std::uint64_t>(sample)};
                               std::ranges::shuffle(shuffled_order, random);
-                              const auto batch_updates = make_actor_intent_updates(
+                              const auto batch_updates = make_instance_updates(
                                   frozen.instances, shuffled_order, moving);
-                              const auto batch_stationary_updates = make_actor_intent_updates(
+                              const auto batch_stationary_updates = make_instance_updates(
                                   frozen.instances, shuffled_order, {});
 
                               const auto activation_timing = measure([&] {
-                                  apply_actor_intent(active, frozen.instances, active_actors,
+                                  apply_instance_update(active, frozen.instances, active_instances,
                                                      moving, policy);
                               });
                               emit_measurement({
                                   "motion",
                                   "active_set_activate",
-                                  "three_node_articulation_forest",
-                                  "input_actor_order_ascending",
+                                  "three_node_hierarchy_forest",
+                                  "input_instance_order_ascending",
                                   topology,
-                                  actor_total,
+                                  instance_total,
                                   active.size(),
                                   0,
                                   0,
@@ -1221,20 +1221,20 @@ void run_motion_case(std::size_t actor_total, double active_ratio,
                                   retained_bytes(frozen.runtime) + active.storage_capacity_bytes(),
                                   0,
                                   static_cast<double>(active.size()),
-                                  active.size() == active_actors * 3,
+                                  active.size() == active_instances * 3,
                               });
 
                               const auto reverse_activation_timing = measure([&] {
-                                  apply_actor_intent_order(reverse_active, frozen.instances,
+                                  apply_instance_update_order(reverse_active, frozen.instances,
                                                            descending_order, moving, policy);
                               });
                               emit_measurement({
                                   "motion",
                                   "active_set_activate_reverse",
-                                  "three_node_articulation_forest",
-                                  "input_actor_order_descending",
+                                  "three_node_hierarchy_forest",
+                                  "input_instance_order_descending",
                                   topology,
-                                  actor_total,
+                                  instance_total,
                                   reverse_active.size(),
                                   0,
                                   0,
@@ -1248,20 +1248,20 @@ void run_motion_case(std::size_t actor_total, double active_ratio,
                                       reverse_active.storage_capacity_bytes(),
                                   0,
                                   static_cast<double>(reverse_active.size()),
-                                  reverse_active.size() == active_actors * 3,
+                                  reverse_active.size() == active_instances * 3,
                               });
 
                               const auto shuffled_activation_timing = measure([&] {
-                                  apply_actor_intent_order(shuffled_active, frozen.instances,
+                                  apply_instance_update_order(shuffled_active, frozen.instances,
                                                            shuffled_order, moving, policy);
                               });
                               emit_measurement({
                                   "motion",
                                   "active_set_activate_shuffled",
-                                  "three_node_articulation_forest",
-                                  "input_actor_order_seeded_shuffle",
+                                  "three_node_hierarchy_forest",
+                                  "input_instance_order_seeded_shuffle",
                                   topology,
-                                  actor_total,
+                                  instance_total,
                                   shuffled_active.size(),
                                   0,
                                   0,
@@ -1275,7 +1275,7 @@ void run_motion_case(std::size_t actor_total, double active_ratio,
                                       shuffled_active.storage_capacity_bytes(),
                                   0,
                                   static_cast<double>(shuffled_active.size()),
-                                  shuffled_active.size() == active_actors * 3,
+                                  shuffled_active.size() == active_instances * 3,
                               });
 
                               const auto batch_activation_timing = measure([&] {
@@ -1283,16 +1283,16 @@ void run_motion_case(std::size_t actor_total, double active_ratio,
                                                                  batch_workspace) !=
                                       scene_polytree::motion::motion_error::none) {
                                       throw std::runtime_error(
-                                          "batched articulation command update failed");
+                                          "batched hierarchy command update failed");
                                   }
                               });
                               emit_measurement({
                                   "motion",
                                   "active_set_activate_batch",
-                                  "three_node_articulation_forest",
+                                  "three_node_hierarchy_forest",
                                   "validated_sort_coalesce_merge",
                                   topology,
-                                  actor_total,
+                                  instance_total,
                                   batch_active.size(),
                                   0,
                                   0,
@@ -1309,24 +1309,24 @@ void run_motion_case(std::size_t actor_total, double active_ratio,
                                   active_sets_match(batch_active, shuffled_active),
                               });
 
-                              const auto churn_actor_count =
-                                  active_actors == 0 ? std::size_t{}
-                                                     : std::max<std::size_t>(1, active_actors / 10);
+                              const auto churn_instance_count =
+                                  active_instances == 0 ? std::size_t{}
+                                                     : std::max<std::size_t>(1, active_instances / 10);
                               const auto churn_order = std::span<const std::size_t>{shuffled_order}
-                                                           .first(churn_actor_count);
+                                                           .first(churn_instance_count);
                               const auto churn_timing = measure([&] {
-                                  apply_actor_intent_order(shuffled_active, frozen.instances,
+                                  apply_instance_update_order(shuffled_active, frozen.instances,
                                                            churn_order, {}, policy);
-                                  apply_actor_intent_order(shuffled_active, frozen.instances,
+                                  apply_instance_update_order(shuffled_active, frozen.instances,
                                                            churn_order, moving, policy);
                               });
                               emit_measurement({
                                   "motion",
                                   "active_set_churn_10_percent",
-                                  "three_node_articulation_forest",
-                                  "input_actor_order_seeded_shuffle",
+                                  "three_node_hierarchy_forest",
+                                  "input_instance_order_seeded_shuffle",
                                   topology,
-                                  actor_total,
+                                  instance_total,
                                   shuffled_active.size(),
                                   0,
                                   0,
@@ -1340,23 +1340,23 @@ void run_motion_case(std::size_t actor_total, double active_ratio,
                                       shuffled_active.storage_capacity_bytes(),
                                   0,
                                   static_cast<double>(shuffled_active.size()),
-                                  shuffled_active.size() == active_actors * 3,
+                                  shuffled_active.size() == active_instances * 3,
                               });
 
-                              const fixture::motion_command changed{3.0, -0.5, 0.75, -0.25};
-                              const auto changed_batch_updates = make_actor_intent_updates(
+                              const fixture::motion_update changed{3.0, -0.5, 0.75, -0.25};
+                              const auto changed_batch_updates = make_instance_updates(
                                   frozen.instances, shuffled_order, changed);
                               const auto update_timing = measure([&] {
-                                  apply_actor_intent(active, frozen.instances, active_actors,
+                                  apply_instance_update(active, frozen.instances, active_instances,
                                                      changed, policy);
                               });
                               emit_measurement({
                                   "motion",
                                   "active_set_update",
-                                  "three_node_articulation_forest",
+                                  "three_node_hierarchy_forest",
                                   "node_handle_order",
                                   topology,
-                                  actor_total,
+                                  instance_total,
                                   active.size(),
                                   0,
                                   0,
@@ -1369,7 +1369,7 @@ void run_motion_case(std::size_t actor_total, double active_ratio,
                                   retained_bytes(frozen.runtime) + active.storage_capacity_bytes(),
                                   0,
                                   static_cast<double>(active.size()),
-                                  active.size() == active_actors * 3,
+                                  active.size() == active_instances * 3,
                               });
 
                               const auto batch_update_timing = measure([&] {
@@ -1377,16 +1377,16 @@ void run_motion_case(std::size_t actor_total, double active_ratio,
                                                                  batch_workspace) !=
                                       scene_polytree::motion::motion_error::none) {
                                       throw std::runtime_error(
-                                          "batched articulation motion update failed");
+                                          "batched hierarchy motion update failed");
                                   }
                               });
                               emit_measurement({
                                   "motion",
                                   "active_set_update_batch_warm",
-                                  "three_node_articulation_forest",
+                                  "three_node_hierarchy_forest",
                                   "validated_sort_coalesce_merge",
                                   topology,
-                                  actor_total,
+                                  instance_total,
                                   batch_active.size(),
                                   0,
                                   0,
@@ -1425,10 +1425,10 @@ void run_motion_case(std::size_t actor_total, double active_ratio,
                               emit_measurement({
                                   "motion",
                                   "advance_motion_scene_cold",
-                                  "three_node_articulation_forest",
+                                  "three_node_hierarchy_forest",
                                   "node_handle_order_then_topological",
                                   topology,
-                                  actor_total,
+                                  instance_total,
                                   active.size(),
                                   0,
                                   result.changed_nodes.size(),
@@ -1460,10 +1460,10 @@ void run_motion_case(std::size_t actor_total, double active_ratio,
                               emit_measurement({
                                   "motion",
                                   "advance_motion_scene_warm",
-                                  "three_node_articulation_forest",
+                                  "three_node_hierarchy_forest",
                                   "node_handle_order_then_topological",
                                   topology,
-                                  actor_total,
+                                  instance_total,
                                   active.size(),
                                   0,
                                   result.changed_nodes.size(),
@@ -1482,16 +1482,16 @@ void run_motion_case(std::size_t actor_total, double active_ratio,
                               });
 
                               const auto deactivation_timing = measure([&] {
-                                  apply_actor_intent(active, frozen.instances, active_actors, {},
+                                  apply_instance_update(active, frozen.instances, active_instances, {},
                                                      policy);
                               });
                               emit_measurement({
                                   "motion",
                                   "active_set_deactivate",
-                                  "three_node_articulation_forest",
+                                  "three_node_hierarchy_forest",
                                   "node_handle_order",
                                   topology,
-                                  actor_total,
+                                  instance_total,
                                   active.size(),
                                   0,
                                   0,
@@ -1508,16 +1508,16 @@ void run_motion_case(std::size_t actor_total, double active_ratio,
                               });
 
                               const auto reverse_deactivation_timing = measure([&] {
-                                  apply_actor_intent_order(reverse_active, frozen.instances,
+                                  apply_instance_update_order(reverse_active, frozen.instances,
                                                            descending_order, {}, policy);
                               });
                               emit_measurement({
                                   "motion",
                                   "active_set_deactivate_reverse",
-                                  "three_node_articulation_forest",
-                                  "input_actor_order_descending",
+                                  "three_node_hierarchy_forest",
+                                  "input_instance_order_descending",
                                   topology,
-                                  actor_total,
+                                  instance_total,
                                   reverse_active.size(),
                                   0,
                                   0,
@@ -1539,16 +1539,16 @@ void run_motion_case(std::size_t actor_total, double active_ratio,
                                                                  batch_workspace) !=
                                       scene_polytree::motion::motion_error::none) {
                                       throw std::runtime_error(
-                                          "batched articulation deactivation failed");
+                                          "batched hierarchy deactivation failed");
                                   }
                               });
                               emit_measurement({
                                   "motion",
                                   "active_set_deactivate_batch",
-                                  "three_node_articulation_forest",
+                                  "three_node_hierarchy_forest",
                                   "validated_sort_coalesce_merge",
                                   topology,
-                                  actor_total,
+                                  instance_total,
                                   batch_active.size(),
                                   0,
                                   0,
@@ -1568,9 +1568,9 @@ void run_motion_case(std::size_t actor_total, double active_ratio,
 }
 
 void run_motion_suite(const options &configuration) {
-    std::ranges::for_each(actor_sizes(configuration), [&](std::size_t actors) {
-        std::ranges::for_each(actor_ratios(configuration), [&](double ratio) {
-            run_motion_case(actors, ratio, configuration);
+    std::ranges::for_each(instance_sizes(configuration), [&](std::size_t instances) {
+        std::ranges::for_each(instance_ratios(configuration), [&](double ratio) {
+            run_motion_case(instances, ratio, configuration);
         });
     });
 }
@@ -1584,12 +1584,12 @@ void write_changed(const fixture::runtime_scene &runtime,
     });
 }
 
-void run_synchronization_case(std::size_t actor_total, double changed_request,
+void run_synchronization_case(std::size_t instance_total, double changed_request,
                               const options &configuration) {
     std::ranges::for_each(std::views::iota(std::size_t{}, configuration.samples),
                           [&](std::size_t sample) {
-                              auto fixture = make_articulations(actor_total);
-                              auto frozen = freeze_articulations(fixture);
+                              auto fixture = make_hierarchies(instance_total);
+                              auto frozen = freeze_hierarchies(fixture);
                               fixture::rigid_policy policy;
                               initialize_world(frozen.runtime, policy);
                               const auto token = frozen.runtime.state().revision();
@@ -1623,10 +1623,10 @@ void run_synchronization_case(std::size_t actor_total, double changed_request,
                               emit_measurement({
                                   "synchronization",
                                   "changed_node_selection",
-                                  "three_node_articulation_forest",
+                                  "three_node_hierarchy_forest",
                                   "topological_filter",
                                   topology,
-                                  actor_total,
+                                  instance_total,
                                   0,
                                   directly_dirty,
                                   changed.size(),
@@ -1652,10 +1652,10 @@ void run_synchronization_case(std::size_t actor_total, double changed_request,
                               emit_measurement({
                                   "synchronization",
                                   "target_write",
-                                  "three_node_articulation_forest",
+                                  "three_node_hierarchy_forest",
                                   "changed_node_order",
                                   topology,
-                                  actor_total,
+                                  instance_total,
                                   0,
                                   directly_dirty,
                                   changed.size(),
@@ -1683,10 +1683,10 @@ void run_synchronization_case(std::size_t actor_total, double changed_request,
                               emit_measurement({
                                   "synchronization",
                                   "select_and_write",
-                                  "three_node_articulation_forest",
+                                  "three_node_hierarchy_forest",
                                   "topological_filter_then_write",
                                   topology,
-                                  actor_total,
+                                  instance_total,
                                   0,
                                   directly_dirty,
                                   changed.size(),
@@ -1712,10 +1712,10 @@ void run_synchronization_case(std::size_t actor_total, double changed_request,
                               emit_measurement({
                                   "synchronization",
                                   "direct_evaluated_batch_write",
-                                  "three_node_articulation_forest",
+                                  "three_node_hierarchy_forest",
                                   "evaluated_topological_batch",
                                   topology,
-                                  actor_total,
+                                  instance_total,
                                   0,
                                   directly_dirty,
                                   evaluated.changed_nodes.size(),
@@ -1735,9 +1735,9 @@ void run_synchronization_case(std::size_t actor_total, double changed_request,
 }
 
 void run_synchronization_suite(const options &configuration) {
-    std::ranges::for_each(actor_sizes(configuration), [&](std::size_t actors) {
+    std::ranges::for_each(instance_sizes(configuration), [&](std::size_t instances) {
         std::ranges::for_each(workload_ratios(configuration), [&](double ratio) {
-            run_synchronization_case(actors, ratio, configuration);
+            run_synchronization_case(instances, ratio, configuration);
         });
     });
 }

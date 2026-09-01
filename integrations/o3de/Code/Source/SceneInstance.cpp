@@ -23,9 +23,11 @@ InstantiateTopology(SceneInstance::AuthoringScene &scene,
                                               &StableNodeBinding::m_bindingId);
         const auto inserted =
             node.m_parentBindingId.IsEmpty()
-                ? scene.insert_root(node.m_nodeType, AzTransformValue(node.m_initialLocal))
+                ? scene.insert_root(TransformNodePayload::Transform,
+                                    AzTransformValue(node.m_initialLocal))
             : parent != slot.m_nodes.end()
-                ? scene.insert_child(parent->m_node, node.m_nodeType, node.m_jointType,
+                ? scene.insert_child(parent->m_node, TransformNodePayload::Transform,
+                                     TransformEdgePayload::Parent,
                                      AzTransformValue(node.m_initialLocal))
                 : wz::core::graph::MutationResult<wz::core::graph::StableNodeId>::failure(
                       wz::core::graph::MutationError::invalid_parent);
@@ -171,7 +173,8 @@ SceneInstance::BindSlot(SlotHandle slot,
     if (runtimeSlot == nullptr) {
         return ScenePolytreeResultCode::StaleHandle;
     }
-    if (bindings.empty() || std::ranges::any_of(bindings, [](const auto &binding) {
+    if (bindings.size() != runtimeSlot->m_nodes.size() ||
+        std::ranges::any_of(bindings, [](const auto &binding) {
             return binding.m_bindingId.IsEmpty() || !binding.m_entity.IsValid() ||
                    !binding.m_nodeToEntity.IsFinite();
         })) {

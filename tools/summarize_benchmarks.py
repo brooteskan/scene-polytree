@@ -39,7 +39,7 @@ def main() -> int:
             record.get("worker_count", 0),
             record.get("task_grain", 0),
             record["node_count"],
-            record["actor_count"],
+            record["instance_count"],
             record["requested_ratio"],
         )
         grouped[key].append(record)
@@ -54,7 +54,7 @@ def main() -> int:
         f"- Compiler: `{metadata.get('compiler')} {metadata.get('compiler_version')}`",
         f"- Build: `{metadata.get('build_config')}`",
         "",
-        "| Suite | Phase | Shape | Order | Workers | Grain | Nodes | Actors | Requested | Changed | Median ns | p95 ns | MAD ns | Allocations | Tasks | Dispatches | Scratch bytes |",
+        "| Suite | Phase | Shape | Order | Workers | Grain | Nodes | Instances | Requested | Changed | Median ns | p95 ns | MAD ns | Allocations | Tasks | Dispatches | Scratch bytes |",
         "| --- | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
     ]
     for key, rows in sorted(grouped.items()):

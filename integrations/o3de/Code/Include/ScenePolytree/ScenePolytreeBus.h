@@ -47,6 +47,17 @@ class ScenePolytreeRequests {
     virtual ScenePolytreeResultCode UnbindSlot(SlotHandle slot) = 0;
     virtual ScenePolytreeResultCode ResetSlot(SlotHandle slot) = 0;
     virtual ScenePolytreeResultCode ReleaseSlot(SlotHandle slot) = 0;
+    virtual SceneCommandSubmission SubmitPlaceSlot(SlotHandle slot, const AZ::Transform &rootWorld,
+                                                   AZ::EntityId completionEntity) = 0;
+    virtual SceneCommandSubmission
+    SubmitBindSlot(SlotHandle slot, const AZStd::vector<ScenePolytreeEntityBinding> &bindings,
+                   AZ::EntityId completionEntity) = 0;
+    virtual SceneCommandSubmission SubmitUnbindSlot(SlotHandle slot,
+                                                    AZ::EntityId completionEntity) = 0;
+    virtual SceneCommandSubmission SubmitResetSlot(SlotHandle slot,
+                                                   AZ::EntityId completionEntity) = 0;
+    virtual SceneCommandSubmission SubmitReleaseSlot(SlotHandle slot,
+                                                     AZ::EntityId completionEntity) = 0;
     virtual NodeResult ResolveNode(SlotHandle slot, const AZ::Name &bindingId) const = 0;
     virtual bool SetSceneActive(SceneHandle scene, bool active) = 0;
     virtual bool RequestCorrection(const SceneCorrection &correction) = 0;
@@ -85,6 +96,13 @@ class ScenePolytreeComponentRequests : public AZ::ComponentBus {
     virtual ScenePolytreeFailure GetFailure() const = 0;
 };
 using ScenePolytreeComponentRequestBus = AZ::EBus<ScenePolytreeComponentRequests>;
+
+class ScenePolytreeCommandNotifications : public AZ::ComponentBus {
+  public:
+    virtual void OnScenePolytreeCommandCompleted(SceneCommandId command, SceneCommandType type,
+                                                 ScenePolytreeResultCode result) = 0;
+};
+using ScenePolytreeCommandNotificationBus = AZ::EBus<ScenePolytreeCommandNotifications>;
 
 class ScenePolytreeRegistrationNotifications : public AZ::ComponentBus {
   public:

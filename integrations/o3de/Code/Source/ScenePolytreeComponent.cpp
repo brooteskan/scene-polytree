@@ -14,11 +14,9 @@ namespace ScenePolytree {
 void ScenePolytreeComponentConfig::Reflect(AZ::ReflectContext *context) {
     if (auto *serializeContext = azrtti_cast<AZ::SerializeContext *>(context)) {
         serializeContext->Class<ScenePolytreeNodeDescriptor>()
-            ->Version(1)
+            ->Version(2)
             ->Field("BindingId", &ScenePolytreeNodeDescriptor::m_bindingId)
             ->Field("ParentBindingId", &ScenePolytreeNodeDescriptor::m_parentBindingId)
-            ->Field("NodeType", &ScenePolytreeNodeDescriptor::m_nodeType)
-            ->Field("JointType", &ScenePolytreeNodeDescriptor::m_jointType)
             ->Field("InitialLocal", &ScenePolytreeNodeDescriptor::m_initialLocal);
         serializeContext->Class<ScenePolytreeComponentConfig, AZ::ComponentConfig>()
             ->Version(1)
