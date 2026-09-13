@@ -1,0 +1,3 @@
+[submodule "external/polytree"]
+	path = external/polytree
+	url = https://github.com/brooteskan/polytree.git

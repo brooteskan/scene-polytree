@@ -1,6 +1,6 @@
 /build*/
 /out/
-/.vs/
+.vs/
 /.vscode/
 CMakeUserPresets.json
 *.user
