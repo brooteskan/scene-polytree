@@ -1,46 +1,17 @@
 include_guard(GLOBAL)
 
 function(scene_polytree_require_polytree)
-    if(TARGET polytree::polytree)
-        return()
+    get_filename_component(repository "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/.." ABSOLUTE)
+    set(helper "${repository}/external/polytree/external/algo/cmake/GitSubmodule.cmake")
+    if(NOT EXISTS "${helper}")
+        message(FATAL_ERROR "Missing dependency submodules. Run git submodule update --init --recursive")
     endif()
-
-    if(SCENE_POLYTREE_ALGO_SOURCE_DIR)
-        set(
-            POLYTREE_ALGO_SOURCE_DIR
-            "${SCENE_POLYTREE_ALGO_SOURCE_DIR}"
-            CACHE PATH
-            "Optional path to an algo source checkout"
-            FORCE
-        )
-    endif()
-
-    if(SCENE_POLYTREE_POLYTREE_SOURCE_DIR)
-        set(POLYTREE_BUILD_TESTS OFF CACHE BOOL "" FORCE)
-        add_subdirectory(
-            "${SCENE_POLYTREE_POLYTREE_SOURCE_DIR}"
-            "${CMAKE_CURRENT_BINARY_DIR}/_deps/polytree-build"
-            EXCLUDE_FROM_ALL
-        )
-        return()
-    endif()
-
-    find_package(polytree 0.2 CONFIG QUIET)
-    if(TARGET polytree::polytree)
-        return()
-    endif()
-
-    include(FetchContent)
-    set(POLYTREE_BUILD_TESTS OFF CACHE BOOL "" FORCE)
-    FetchContent_Declare(
-        polytree
-        GIT_REPOSITORY https://github.com/brooteskan/polytree.git
-        GIT_TAG v0.2.0
-        GIT_SHALLOW TRUE
-    )
-    FetchContent_MakeAvailable(polytree)
-
-    if(NOT TARGET polytree::polytree)
-        message(FATAL_ERROR "The polytree dependency did not export polytree::polytree")
-    endif()
+    include("${helper}")
+    set(ALGO_BUILD_TESTS OFF)
+    set(POLYTREE_BUILD_TESTS OFF)
+    set(POLYTREE_BUILD_BENCHMARKS OFF)
+    wz_add_git_submodule("${repository}" external/polytree polytree::polytree)
+    # Also validate the transitive algo pin when polytree was already provided
+    # by another consumer, so target reuse cannot hide a conflicting gitlink.
+    wz_add_git_submodule("${repository}/external/polytree" external/algo algo::algo)
 endfunction()

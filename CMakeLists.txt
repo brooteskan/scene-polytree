@@ -25,18 +25,6 @@ option(
     "Build scene-polytree benchmarks"
     OFF
 )
-set(
-    SCENE_POLYTREE_POLYTREE_SOURCE_DIR
-    ""
-    CACHE PATH
-    "Optional path to a polytree source checkout"
-)
-set(
-    SCENE_POLYTREE_ALGO_SOURCE_DIR
-    ""
-    CACHE PATH
-    "Optional path to an algo source checkout used by polytree"
-)
 
 add_library(scene_polytree INTERFACE)
 add_library(scene-polytree::core ALIAS scene_polytree)

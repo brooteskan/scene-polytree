@@ -107,19 +107,17 @@ See [the motion contract](docs/motion.md) and
 ## Build and test
 
 ```sh
+git submodule update --init --recursive
 cmake -S . -B build -DSCENE_POLYTREE_BUILD_TESTS=ON
 cmake --build build
 ctest --test-dir build --output-on-failure
 ```
 
-For offline development with sibling checkouts:
-
-```sh
-cmake -S . -B build \
-  -DSCENE_POLYTREE_BUILD_TESTS=ON \
-  -DSCENE_POLYTREE_POLYTREE_SOURCE_DIR=/path/to/polytree \
-  -DSCENE_POLYTREE_ALGO_SOURCE_DIR=/path/to/algo
-```
+The `external/polytree` submodule pins the topology library; its own
+`external/algo` submodule pins the shared algorithm vocabulary. Initialize them
+recursively before configuring. CMake does not fetch repositories, search for
+installed source dependencies, or accept sibling-checkout path overrides.
+Consumers sharing a target must pin the same initialized Git revision.
 
 Run the source-policy check directly with:
 
