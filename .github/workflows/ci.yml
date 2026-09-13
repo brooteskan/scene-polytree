@@ -12,6 +12,8 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
       - name: Enforce source policy
         run: python tools/check_control_flow_policy.py
       - name: Configure
@@ -24,7 +26,12 @@ jobs:
         run: cmake --build build --config Release
       - name: Test
         run: ctest --test-dir build -C Release --output-on-failure
-      - name: Install package chain
+      # Dependency subdirectories are excluded from the top-level install.
+      - name: Install algo package
+        run: cmake --install build/submodules/polytree/submodules/algo --config Release --prefix "${{ github.workspace }}/install"
+      - name: Install polytree package
+        run: cmake --install build/submodules/polytree --config Release --prefix "${{ github.workspace }}/install"
+      - name: Install scene-polytree package
         run: cmake --install build --config Release --prefix "${{ github.workspace }}/install"
       - name: Configure installed consumer
         run: cmake -S tests/consumer -B consumer-build -DCMAKE_PREFIX_PATH="${{ github.workspace }}/install"
